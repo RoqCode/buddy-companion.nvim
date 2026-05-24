@@ -18,6 +18,7 @@ local state = {
 }
 
 local SPINNER_FRAMES = { "-", "\\", "|", "/" }
+local stop_spinner
 
 local function is_valid_window(win)
   return win and vim.api.nvim_win_is_valid(win)
@@ -39,6 +40,7 @@ local function close_chat_windows()
   end
 
   state.closing = true
+  stop_spinner()
   close_window(state.input_win)
   close_window(state.chat_win)
   state.input_win = nil
@@ -51,7 +53,6 @@ local function map_close(buf)
   vim.keymap.set("n", "<Esc>", close_chat_windows, { buffer = buf, silent = true })
   vim.keymap.set("n", "<C-w>q", close_chat_windows, { buffer = buf, silent = true })
   vim.keymap.set("n", "<C-w><C-q>", close_chat_windows, { buffer = buf, silent = true })
-  vim.keymap.set("i", "<Esc>", close_chat_windows, { buffer = buf, silent = true })
 end
 
 local function ensure_chat_buffer()
@@ -85,6 +86,7 @@ local function ensure_input_buffer()
     M.submit_input()
   end, { buffer = state.input_buf, silent = true })
   map_close(state.input_buf)
+  vim.keymap.set("i", "<Esc>", close_chat_windows, { buffer = state.input_buf, silent = true })
 
   return state.input_buf
 end
@@ -131,7 +133,7 @@ local function render_input_title()
   })
 end
 
-local function stop_spinner()
+stop_spinner = function()
   if state.spinner_timer then
     state.spinner_timer:stop()
     state.spinner_timer:close()
@@ -164,6 +166,12 @@ local function set_pending(pending)
     state.spinner_index = (state.spinner_index % #SPINNER_FRAMES) + 1
     render_input_title()
   end))
+end
+
+local function restart_spinner_if_pending()
+  if state.pending and not state.spinner_timer then
+    set_pending(true)
+  end
 end
 
 local function clear_input()
@@ -220,17 +228,29 @@ local function submit_question(question)
     return
   end
 
+  local request_started_at = session.current().started_at
+
   session.append_message("user", question)
   clear_input()
   set_pending(true)
 
   context.collect_async(function(collected_context)
+    if not session.current().active or session.current().started_at ~= request_started_at then
+      set_pending(false)
+      return
+    end
+
     if not collected_context then
       set_pending(false)
       return
     end
 
     backend.answer_async(collected_context, question, function(response, err)
+      if not session.current().active or session.current().started_at ~= request_started_at then
+        set_pending(false)
+        return
+      end
+
       set_pending(false)
 
       if err then
@@ -280,6 +300,7 @@ function M.open()
   if is_valid_window(state.chat_win) and is_valid_window(state.input_win) then
     configure_window(state.chat_win)
     render_input_title()
+    restart_spinner_if_pending()
     M.render()
     focus_input()
     return
@@ -319,6 +340,7 @@ function M.open()
   configure_window(state.chat_win)
   vim.api.nvim_set_option_value("wrap", false, { win = state.input_win })
   register_window_closed_autocmd()
+  restart_spinner_if_pending()
   M.render()
   focus_input()
 end

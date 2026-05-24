@@ -97,6 +97,20 @@ local function build_prompt(collected_context, instruction)
 	})
 end
 
+local function normalize_answer(decoded)
+	if type(decoded) ~= "table" or type(decoded.message) ~= "string" then
+		return nil
+	end
+
+	local ok, nested = pcall(vim.json.decode, decoded.message)
+
+	if ok and type(nested) == "table" and type(nested.message) == "string" then
+		decoded.message = nested.message
+	end
+
+	return decoded
+end
+
 local function parse_answer_response(response)
 	if response == nil then
 		return nil, "OpenCode response was empty"
@@ -106,15 +120,9 @@ local function parse_answer_response(response)
 
 	if type(response) == "table" then
 		if response.info and response.info.structured then
-			local structured = response.info.structured
+			local structured = normalize_answer(response.info.structured)
 
-			if type(structured.message) == "string" then
-				local ok, nested = pcall(vim.json.decode, structured.message)
-
-				if ok and type(nested) == "table" and type(nested.message) == "string" then
-					structured.message = nested.message
-				end
-
+			if structured then
 				return structured, nil
 			end
 		end
@@ -125,15 +133,9 @@ local function parse_answer_response(response)
 			if part.type == "text" and part.text then
 				table.insert(chunks, part.text)
 			elseif part.type == "tool" and part.tool == "StructuredOutput" and part.state then
-				local input = part.state.input
+				local input = normalize_answer(part.state.input)
 
-				if type(input) == "table" and type(input.message) == "string" then
-					local ok, nested = pcall(vim.json.decode, input.message)
-
-					if ok and type(nested) == "table" and type(nested.message) == "string" then
-						input.message = nested.message
-					end
-
+				if input then
 					return input, nil
 				end
 			end
@@ -146,14 +148,14 @@ local function parse_answer_response(response)
 
 	local ok, parsed = pcall(vim.json.decode, text)
 
-	if not ok or type(parsed) ~= "table" or type(parsed.message) ~= "string" then
+	if not ok then
 		return nil, "OpenCode response was not valid Buddy answer JSON"
 	end
 
-	local nested_ok, nested = pcall(vim.json.decode, parsed.message)
+	parsed = normalize_answer(parsed)
 
-	if nested_ok and type(nested) == "table" and type(nested.message) == "string" then
-		parsed.message = nested.message
+	if not parsed then
+		return nil, "OpenCode response was not valid Buddy answer JSON"
 	end
 
 	return parsed, nil
@@ -282,39 +284,6 @@ function M.ensure_opencode_session_async(callback)
 		session.set_opencode_session_id(created_session.id)
 		callback(created_session.id, nil)
 	end)
-end
-
-function M.prompt(collected_context, instruction)
-	local current_session = session.current()
-	local opencode_session_id, err = M.ensure_opencode_session()
-
-	if err then
-		return nil, err
-	end
-
-	local current_config = config.get()
-	local body = {
-		agent = current_config.opencode.agent,
-		format = buddy_output_format(),
-		system = build_system_prompt(),
-		parts = {
-			{
-				type = "text",
-				text = build_prompt(collected_context, instruction),
-			},
-		},
-	}
-	local prompt_response, prompt_err = http.request("POST", "/session/" .. opencode_session_id .. "/message", body, {
-		directory = current_session.workspace_root,
-	})
-
-	if prompt_err then
-		session.set_backend_available(false)
-		return nil, prompt_err
-	end
-
-	session.set_backend_available(true)
-	return M.parse_buddy_response(prompt_response)
 end
 
 function M.prompt_async(collected_context, instruction, callback)

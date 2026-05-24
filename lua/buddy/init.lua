@@ -69,7 +69,13 @@ local function start()
     return
   end
 
+  local started_at = session.current().started_at
+
   backend.ensure_daemon_async(function(response, err, started)
+    if not session.current().active or session.current().started_at ~= started_at then
+      return
+    end
+
     if err then
       show_backend_error("OpenCode backend unavailable: " .. err)
       return

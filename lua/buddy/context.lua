@@ -186,7 +186,7 @@ function M.collect()
 end
 
 function M.collect_async(callback)
-  local current_session = session.current()
+  local current_session = vim.deepcopy(session.current())
 
   if not current_session.active then
     vim.notify("No active Buddy session", vim.log.levels.INFO)

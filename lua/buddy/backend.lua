@@ -259,6 +259,8 @@ function M.ensure_opencode_session_async(callback)
 		return
 	end
 
+	local generation = current_session.generation
+
 	local current_config = config.get()
 	local body = {
 		title = "Buddy Companion",
@@ -268,6 +270,11 @@ function M.ensure_opencode_session_async(callback)
 	http.request_async("POST", "/session", body, {
 		directory = current_session.workspace_root,
 	}, function(created_session, err)
+		if not session.current().active or session.current().generation ~= generation then
+			callback(nil, "Buddy session changed before OpenCode session was created")
+			return
+		end
+
 		if err then
 			session.set_backend_available(false)
 			callback(nil, err)

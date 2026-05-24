@@ -35,7 +35,13 @@ local function backend_health()
 end
 
 local function backend_test()
+  local generation = session.current().generation
+
   context.collect_async(function(collected_context)
+    if not session.current().active or session.current().generation ~= generation then
+      return
+    end
+
     if not collected_context then
       return
     end
@@ -44,6 +50,10 @@ local function backend_test()
       collected_context,
       "Manual backend test. Say whether there is anything important to mention about this current context. Prefer should_speak=false unless something is concrete.",
       function(response, err)
+        if not session.current().active or session.current().generation ~= generation then
+          return
+        end
+
         if err then
           show_backend_error("OpenCode backend error: " .. err)
           return
@@ -69,10 +79,10 @@ local function start()
     return
   end
 
-  local started_at = session.current().started_at
+  local generation = session.current().generation
 
   backend.ensure_daemon_async(function(response, err, started)
-    if not session.current().active or session.current().started_at ~= started_at then
+    if not session.current().active or session.current().generation ~= generation then
       return
     end
 

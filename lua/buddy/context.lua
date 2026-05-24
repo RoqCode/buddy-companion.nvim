@@ -27,10 +27,13 @@ local function severity_name(severity)
   return tostring(severity)
 end
 
-local function collect_buffer_context()
-  local bufnr = vim.api.nvim_get_current_buf()
+local function collect_buffer_context(opts)
+  opts = opts or {}
+  local win = opts.source_win
+  local bufnr = win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) or vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(bufnr)
-  local cursor = vim.api.nvim_win_get_cursor(0)
+  local cursor = win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win) or vim.api.nvim_win_get_cursor(0)
+  local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1] or ""
 
   return {
     bufnr = bufnr,
@@ -40,7 +43,7 @@ local function collect_buffer_context()
       line = cursor[1],
       column = cursor[2],
     },
-    current_line = vim.api.nvim_get_current_line(),
+    current_line = line,
   }
 end
 
@@ -185,7 +188,7 @@ function M.collect()
   }
 end
 
-function M.collect_async(callback)
+function M.collect_async(callback, opts)
   local current_session = vim.deepcopy(session.current())
 
   if not current_session.active then
@@ -195,6 +198,9 @@ function M.collect_async(callback)
   end
 
   local pending = 2
+  local buffer = collect_buffer_context(opts)
+  local diagnostics = collect_diagnostics(current_session)
+  local additional = additional_context.collect(current_session)
   local git_diff = nil
   local untracked_files = nil
 
@@ -207,11 +213,11 @@ function M.collect_async(callback)
 
     callback({
       workspace_root = current_session.workspace_root,
-      buffer = collect_buffer_context(),
-      diagnostics = collect_diagnostics(current_session),
+      buffer = buffer,
+      diagnostics = diagnostics,
       git_diff = git_diff,
       untracked_files = untracked_files,
-      additional_context = additional_context.collect(current_session),
+      additional_context = additional,
     })
   end
 

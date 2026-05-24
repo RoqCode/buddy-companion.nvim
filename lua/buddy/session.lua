@@ -4,6 +4,7 @@ local uv = vim.uv or vim.loop
 
 local state = {
   active = false,
+  generation = 0,
   started_at = nil,
   workspace_root = nil,
   messages = {},
@@ -14,6 +15,7 @@ local state = {
 
 local on_change = nil
 local GIT_TIMEOUT_MS = 2000
+local next_generation = 0
 
 local function notify_change()
   if on_change then
@@ -37,6 +39,7 @@ end
 
 local function reset()
   state.active = false
+  state.generation = 0
   state.started_at = nil
   state.workspace_root = nil
   state.messages = {}
@@ -56,6 +59,8 @@ function M.start()
   end
 
   state.active = true
+  next_generation = next_generation + 1
+  state.generation = next_generation
   state.started_at = os.time()
   state.workspace_root = find_workspace_root()
   state.messages = {}

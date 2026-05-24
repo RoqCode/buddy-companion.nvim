@@ -11,6 +11,7 @@ local state = {
   chat_win = nil,
   input_buf = nil,
   input_win = nil,
+  source_win = nil,
   pending = false,
   spinner_timer = nil,
   spinner_index = 1,
@@ -228,14 +229,14 @@ local function submit_question(question)
     return
   end
 
-  local request_started_at = session.current().started_at
+  local request_generation = session.current().generation
 
   session.append_message("user", question)
   clear_input()
   set_pending(true)
 
   context.collect_async(function(collected_context)
-    if not session.current().active or session.current().started_at ~= request_started_at then
+    if not session.current().active or session.current().generation ~= request_generation then
       set_pending(false)
       return
     end
@@ -246,7 +247,7 @@ local function submit_question(question)
     end
 
     backend.answer_async(collected_context, question, function(response, err)
-      if not session.current().active or session.current().started_at ~= request_started_at then
+      if not session.current().active or session.current().generation ~= request_generation then
         set_pending(false)
         return
       end
@@ -262,7 +263,7 @@ local function submit_question(question)
         reason = "user_question",
       })
     end)
-  end)
+  end, { source_win = state.source_win })
 end
 
 function M.render()
@@ -294,6 +295,10 @@ function M.render()
 end
 
 function M.open()
+  if not is_valid_window(state.chat_win) and not is_valid_window(state.input_win) then
+    state.source_win = vim.api.nvim_get_current_win()
+  end
+
   local chat_buf = ensure_chat_buffer()
   local input_buf = ensure_input_buffer()
 
@@ -356,10 +361,10 @@ function M.submit_input()
   end
 
   local buf = ensure_input_buffer()
-  local last_line_number = vim.api.nvim_buf_line_count(buf)
-  local line = vim.api.nvim_buf_get_lines(buf, last_line_number - 1, last_line_number, false)[1] or ""
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local question = vim.trim(table.concat(lines, "\n"))
 
-  submit_question(line)
+  submit_question(question)
 end
 
 function M.ask()

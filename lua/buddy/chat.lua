@@ -36,25 +36,26 @@ local function close_window(win)
 end
 
 local function close_chat_windows()
-  if state.closing then
-    return
-  end
+	if state.closing then
+		return
+	end
 
-  local source_win = state.source_win
+	local source_win = state.source_win
 
-  state.closing = true
-  stop_spinner()
-  close_window(state.input_win)
-  close_window(state.chat_win)
-  state.input_win = nil
-  state.chat_win = nil
-  state.closing = false
+	state.closing = true
+	stop_spinner()
+	close_window(state.input_win)
+	close_window(state.chat_win)
+	state.input_win = nil
+	state.chat_win = nil
+	session.set_chat_open(false)
+	state.closing = false
 
-  if is_valid_window(source_win) then
-    vim.api.nvim_set_current_win(source_win)
-  end
+	if is_valid_window(source_win) then
+		vim.api.nvim_set_current_win(source_win)
+	end
 
-  vim.cmd("stopinsert")
+	vim.cmd("stopinsert")
 end
 
 local function map_close(buf)
@@ -319,6 +320,7 @@ function M.open()
 		render_input_title()
 		restart_spinner_if_pending()
 		M.render()
+		session.set_chat_open(true)
 		focus_input()
 		return
 	end
@@ -359,6 +361,7 @@ function M.open()
 	register_window_closed_autocmd()
 	restart_spinner_if_pending()
 	M.render()
+	session.set_chat_open(true)
 	focus_input()
 end
 

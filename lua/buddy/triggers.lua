@@ -2,6 +2,7 @@ local config = require("buddy.config")
 local session = require("buddy.session")
 local context = require("buddy.context")
 local backend = require("buddy.backend")
+local notification = require("buddy.notify")
 
 local M = {}
 
@@ -17,10 +18,14 @@ local state = {
 	last_prompt_at = nil,
 	proactive_calls = 0,
 	diff_hash = nil,
+	diff_request_id = 0,
 	diagnostic_signatures = {},
 	todo_signatures = {},
 	running = false,
 }
+
+local MAX_TODO_SCAN_LINES = 5000
+local schedule
 
 local IMPORTANT_DIAGNOSTICS = {
 	[vim.diagnostic.severity.ERROR] = true,
@@ -57,6 +62,7 @@ local function reset_state()
 	state.last_prompt_at = nil
 	state.proactive_calls = 0
 	state.diff_hash = nil
+	state.diff_request_id = 0
 	state.diagnostic_signatures = {}
 	state.todo_signatures = {}
 	state.running = false
@@ -101,6 +107,15 @@ local function collect_todo_signatures(bufnr)
 	local signatures = {}
 
 	if not vim.api.nvim_buf_is_valid(bufnr) then
+		return signatures
+	end
+
+	if vim.bo[bufnr].buftype ~= "" then
+		return signatures
+	end
+
+	if vim.api.nvim_buf_line_count(bufnr) > MAX_TODO_SCAN_LINES then
+		debug("skipped TODO scan for large buffer")
 		return signatures
 	end
 
@@ -162,9 +177,20 @@ local function append_backend_error(err)
 	session.report_backend_error("OpenCode backend error: " .. err)
 end
 
+local function finish_backend_check()
+	state.running = false
+
+	if state.pending_reason then
+		debug("replaying pending trigger after backend check")
+		schedule(state.pending_reason, state.pending_bufnr)
+	end
+end
+
 local function run_backend_check(reason, bufnr)
 	if state.running then
-		debug("ignored " .. reason .. " because a proactive check is already running")
+		state.pending_reason = reason
+		state.pending_bufnr = bufnr
+		debug("kept " .. reason .. " pending because a proactive check is already running")
 		return
 	end
 
@@ -173,8 +199,6 @@ local function run_backend_check(reason, bufnr)
 	end
 
 	local generation = state.generation
-	local source_win = vim.api.nvim_get_current_win()
-
 	state.running = true
 	state.last_prompt_at = uv.now()
 	state.proactive_calls = state.proactive_calls + 1
@@ -182,25 +206,25 @@ local function run_backend_check(reason, bufnr)
 
 	context.collect_async(function(collected_context)
 		if not session.current().active or current_generation() ~= generation then
-			state.running = false
+			finish_backend_check()
 			debug("backend check ignored because session changed")
 			return
 		end
 
 		if not collected_context then
-			state.running = false
+			finish_backend_check()
 			debug("backend check stopped because context collection returned nothing")
 			return
 		end
 
 		backend.prompt_async(collected_context, instruction_for(reason), function(response, err)
 			if not session.current().active or current_generation() ~= generation then
-				state.running = false
+				finish_backend_check()
 				debug("backend response ignored because session changed")
 				return
 			end
 
-			state.running = false
+			finish_backend_check()
 
 			if err then
 				debug("backend check failed: " .. err)
@@ -211,19 +235,26 @@ local function run_backend_check(reason, bufnr)
 			debug("backend response should_speak=" .. tostring(response.should_speak))
 
 			if response.should_speak then
-				session.append_message("buddy", response.message, {
+				local appended = session.append_message("buddy", response.message, {
 					severity = response.severity,
 					reason = response.reason,
 					trigger = reason,
 					bufnr = bufnr,
+					proactive = true,
 				})
+
+				if appended then
+					notification.show(response.message, response.severity)
+				end
 			end
 		end)
-	end, { source_win = source_win })
+	end, { source_buf = bufnr })
 end
 
 local function update_diff_baseline(callback)
 	local generation = state.generation
+	state.diff_request_id = state.diff_request_id + 1
+	local request_id = state.diff_request_id
 
 	context.collect_async(function(collected_context)
 		if not session.current().active or current_generation() ~= generation then
@@ -234,6 +265,12 @@ local function update_diff_baseline(callback)
 
 		if not collected_context or not collected_context.git_diff or not collected_context.git_diff.available then
 			debug("diff baseline unavailable")
+			callback(false)
+			return
+		end
+
+		if request_id ~= state.diff_request_id then
+			debug("ignored stale diff baseline result")
 			callback(false)
 			return
 		end
@@ -261,6 +298,13 @@ local function evaluate_pending_trigger()
 
 	debug("debounced trigger evaluating " .. reason)
 
+	if state.running then
+		state.pending_reason = reason
+		state.pending_bufnr = bufnr
+		debug("kept " .. reason .. " pending because a proactive check is already running")
+		return
+	end
+
 	if reason == "diff_changed" then
 		update_diff_baseline(function(changed)
 			if changed then
@@ -275,7 +319,7 @@ local function evaluate_pending_trigger()
 	run_backend_check(reason, bufnr)
 end
 
-local function schedule(reason, bufnr)
+function schedule(reason, bufnr)
 	if not session.current().active or current_generation() ~= state.generation then
 		return
 	end
@@ -296,7 +340,7 @@ local function schedule(reason, bufnr)
 	state.debounce_timer:start(debounce_ms, 0, vim.schedule_wrap(evaluate_pending_trigger))
 end
 
-local function on_diagnostics_changed()
+local function on_diagnostics_changed(bufnr)
 	local next_signatures = collect_diagnostic_signatures()
 	local changed = has_new_diagnostics(next_signatures)
 
@@ -304,7 +348,7 @@ local function on_diagnostics_changed()
 
 	if changed then
 		debug("new diagnostic detected")
-		schedule("diagnostic_changed", vim.api.nvim_get_current_buf())
+		schedule("diagnostic_changed", bufnr or vim.api.nvim_get_current_buf())
 	else
 		debug("diagnostic event without new WARN/ERROR")
 	end
@@ -357,7 +401,9 @@ function M.start()
 
 	vim.api.nvim_create_autocmd("DiagnosticChanged", {
 		group = group,
-		callback = on_diagnostics_changed,
+		callback = function(event)
+			on_diagnostics_changed(event.buf)
+		end,
 	})
 
 	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {

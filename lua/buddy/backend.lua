@@ -220,37 +220,6 @@ function M.stop_daemon()
 	return true
 end
 
-function M.ensure_opencode_session()
-	local current_session = session.current()
-
-	if current_session.opencode_session_id then
-		return current_session.opencode_session_id, nil
-	end
-
-	local current_config = config.get()
-	local body = {
-		title = "Buddy Companion",
-		agent = current_config.opencode.agent,
-	}
-	local created_session, err = http.request("POST", "/session", body, {
-		directory = current_session.workspace_root,
-	})
-
-	if err then
-		session.set_backend_available(false)
-		return nil, err
-	end
-
-	if type(created_session) ~= "table" or type(created_session.id) ~= "string" then
-		session.set_backend_available(false)
-		return nil, "OpenCode session create returned an invalid session body"
-	end
-
-	session.set_backend_available(true)
-	session.set_opencode_session_id(created_session.id)
-	return created_session.id, nil
-end
-
 function M.ensure_opencode_session_async(callback)
 	local current_session = session.current()
 

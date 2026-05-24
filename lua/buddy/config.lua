@@ -12,8 +12,13 @@ local defaults = {
 	triggers = {
 		debounce_ms = 2000,
 		cooldown_ms = 1 * 60 * 1000,
-		max_proactive_calls = nil,
-		debug = true,
+		max_proactive_calls = false,
+		debug = false,
+	},
+	notifications = {
+		floating_duration_ms = 15000,
+		floating_content = "full",
+		floating_preview_chars = 50,
 	},
 }
 

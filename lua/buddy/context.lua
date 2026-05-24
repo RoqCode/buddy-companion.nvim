@@ -27,14 +27,31 @@ local function severity_name(severity)
 	return tostring(severity)
 end
 
+local function window_for_buffer(bufnr)
+	for _, win in ipairs(vim.api.nvim_list_wins()) do
+		if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
+			return win
+		end
+	end
+
+	return nil
+end
+
 local function collect_buffer_context(opts)
 	opts = opts or {}
 	local win = opts.source_win
-	local bufnr = win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win)
+	local source_buf = opts.source_buf
+	local bufnr = source_buf and vim.api.nvim_buf_is_valid(source_buf) and source_buf
+		or win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win)
 		or vim.api.nvim_get_current_buf()
+
+	if not (win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr) then
+		win = window_for_buffer(bufnr)
+	end
+
 	local path = vim.api.nvim_buf_get_name(bufnr)
 	local cursor = win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_cursor(win)
-		or vim.api.nvim_win_get_cursor(0)
+		or { 1, 0 }
 	local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1] or ""
 
 	return {

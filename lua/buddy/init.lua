@@ -144,6 +144,16 @@ function M.get_session()
   return session.get()
 end
 
+function M.status()
+  local current_session = session.current()
+
+  if not current_session.active or current_session.unread_count == 0 then
+    return ""
+  end
+
+  return "Buddy " .. current_session.unread_count
+end
+
 function M._append_message(role, content, meta)
   return session.append_message(role, content, meta)
 end
@@ -152,8 +162,8 @@ function M._collect_context()
   return context.collect()
 end
 
-function M._collect_context_async(callback)
-  return context.collect_async(callback)
+function M._collect_context_async(callback, opts)
+  return context.collect_async(callback, opts)
 end
 
 function M._backend_health()

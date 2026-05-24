@@ -20,8 +20,13 @@ require("buddy").setup({
   triggers = {
     debounce_ms = 2000,
     cooldown_ms = 1 * 60 * 1000,
-    max_proactive_calls = nil,
+    max_proactive_calls = false,
     debug = false,
+  },
+  notifications = {
+    floating_duration_ms = 5000,
+    floating_content = "full",
+    floating_preview_chars = 50,
   },
 })
 ```
@@ -55,9 +60,17 @@ included inline, while large or sensitive files are only listed or skipped.
 ## Proactive Triggers
 
 Buddy waits for `triggers.debounce_ms` after trigger events before checking context. Proactive backend
-calls respect `triggers.cooldown_ms`. `triggers.max_proactive_calls` is optional cost control; when it
-is `nil`, there is no per-session maximum. Set `triggers.debug = true` to show trigger decisions via
-`vim.notify`.
+calls respect `triggers.cooldown_ms`. `triggers.max_proactive_calls` is optional cost control; set it
+to a number to enable a per-session maximum, or `false` for no maximum. Set `triggers.debug = true` to
+show trigger decisions via `vim.notify`.
+
+## Notifications
+
+Proactive Buddy messages are always written to chat history and can also appear in a transient floating
+window. Set `notifications.floating_duration_ms` to `0` to disable the floating window.
+`notifications.floating_content` accepts `"full"`, `"preview"`, or `"hidden"`; `"partial"` and
+`"none"` are accepted aliases. Use
+`require("buddy").status()` in a statusline to show unread proactive messages while the chat is closed.
 
 ## OpenCode Backend
 

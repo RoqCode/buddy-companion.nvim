@@ -8,6 +8,8 @@ local state = {
 	started_at = nil,
 	workspace_root = nil,
 	messages = {},
+	unread_count = 0,
+	chat_open = false,
 	backend_available = true,
 	backend_error_reported = false,
 	opencode_session_id = nil,
@@ -43,6 +45,8 @@ local function reset()
 	state.started_at = nil
 	state.workspace_root = nil
 	state.messages = {}
+	state.unread_count = 0
+	state.chat_open = false
 	state.backend_available = true
 	state.backend_error_reported = false
 	state.opencode_session_id = nil
@@ -64,6 +68,8 @@ function M.start()
 	state.started_at = os.time()
 	state.workspace_root = find_workspace_root()
 	state.messages = {}
+	state.unread_count = 0
+	state.chat_open = false
 	state.backend_available = true
 	state.backend_error_reported = false
 	state.opencode_session_id = nil
@@ -96,8 +102,22 @@ function M.append_message(role, content, meta)
 		created_at = os.time(),
 	})
 
+	if meta and meta.proactive and not state.chat_open then
+		state.unread_count = state.unread_count + 1
+	end
+
 	notify_change()
 	return true
+end
+
+function M.set_chat_open(open)
+	state.chat_open = open
+
+	if open then
+		state.unread_count = 0
+	end
+
+	notify_change()
 end
 
 function M.set_backend_available(available)

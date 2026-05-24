@@ -1,7 +1,7 @@
 # buddy-companion.nvim
 
 Buddy is a Neovim companion plugin prototype. It only starts observing after an explicit
-`:BuddyStart` command, which will be added in a later slice.
+`:BuddyStart` command.
 
 ## Local Setup
 
@@ -13,5 +13,10 @@ require("buddy").setup({
 })
 ```
 
-For Slice 1, `setup()` only stores configuration. It does not register background observers or
-start a Buddy session.
+## Commands
+
+- `:BuddyStart` starts a new in-memory Buddy session.
+- `:BuddyStop` stops the active session and clears session state.
+
+For now, starting a session only records session state. It does not register background observers
+or call a backend yet.

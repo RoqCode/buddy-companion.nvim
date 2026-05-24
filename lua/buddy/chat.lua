@@ -1,0 +1,104 @@
+local session = require("buddy.session")
+
+local M = {}
+
+local state = {
+  buf = nil,
+  win = nil,
+}
+
+local function is_valid_window(win)
+  return win and vim.api.nvim_win_is_valid(win)
+end
+
+local function is_valid_buffer(buf)
+  return buf and vim.api.nvim_buf_is_valid(buf)
+end
+
+local function ensure_buffer()
+  if is_valid_buffer(state.buf) then
+    return state.buf
+  end
+
+  state.buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_option_value("buftype", "nofile", { buf = state.buf })
+  vim.api.nvim_set_option_value("bufhidden", "hide", { buf = state.buf })
+  vim.api.nvim_set_option_value("swapfile", false, { buf = state.buf })
+  vim.api.nvim_buf_set_name(state.buf, "Buddy Chat")
+
+  return state.buf
+end
+
+local function message_lines(message)
+  local role = message.role or "buddy"
+  local content = message.content or ""
+  local lines = vim.split(content, "\n", { plain = true })
+
+  if #lines == 0 then
+    lines = { "" }
+  end
+
+  lines[1] = string.format("[%s] %s", role, lines[1])
+
+  for index = 2, #lines do
+    lines[index] = "  " .. lines[index]
+  end
+
+  table.insert(lines, "")
+
+  return lines
+end
+
+function M.render()
+  if not is_valid_buffer(state.buf) then
+    return
+  end
+
+  local current_session = session.current()
+  local lines = {}
+
+  if not current_session.active then
+    lines = { "Buddy is not running. Start a session with :BuddyStart." }
+  elseif #current_session.messages == 0 then
+    lines = { "Buddy session is active.", "", "No messages yet." }
+  else
+    for _, message in ipairs(current_session.messages) do
+      vim.list_extend(lines, message_lines(message))
+    end
+  end
+
+  vim.api.nvim_set_option_value("modifiable", true, { buf = state.buf })
+  vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+  vim.api.nvim_set_option_value("modifiable", false, { buf = state.buf })
+end
+
+function M.open()
+  local buf = ensure_buffer()
+
+  if is_valid_window(state.win) then
+    vim.api.nvim_set_current_win(state.win)
+    M.render()
+    return
+  end
+
+  local width = math.min(80, math.max(40, vim.o.columns - 8))
+  local height = math.min(20, math.max(8, vim.o.lines - 6))
+  local row = math.floor((vim.o.lines - height) / 2)
+  local col = math.floor((vim.o.columns - width) / 2)
+
+  state.win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = row,
+    col = col,
+    style = "minimal",
+    border = "rounded",
+    title = " Buddy Chat ",
+    title_pos = "center",
+  })
+
+  M.render()
+end
+
+return M

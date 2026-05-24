@@ -17,6 +17,7 @@ require("buddy").setup({
 
 - `:BuddyStart` starts a new in-memory Buddy session.
 - `:BuddyStop` stops the active session and clears session state.
+- `:BuddyChat` opens the rolling chat window for the current session.
 
-For now, starting a session only records session state. It does not register background observers
-or call a backend yet.
+For now, starting a session only records session state and enables the rolling chat. It does not
+register background observers or call a backend yet.

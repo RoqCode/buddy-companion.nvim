@@ -3,6 +3,7 @@ local session = require("buddy.session")
 local chat = require("buddy.chat")
 local context = require("buddy.context")
 local backend = require("buddy.backend")
+local triggers = require("buddy.triggers")
 
 local M = {}
 
@@ -79,6 +80,8 @@ local function start()
     return
   end
 
+  triggers.start()
+
   local generation = session.current().generation
 
   backend.ensure_daemon_async(function(response, err, started)
@@ -104,6 +107,7 @@ end
 local function stop()
   local stopped_daemon = backend.stop_daemon()
 
+  triggers.stop()
   session.stop()
 
   if stopped_daemon then
@@ -158,6 +162,10 @@ end
 
 function M._backend_health_async(callback)
   return backend.health_async(callback)
+end
+
+function M._trigger_state()
+  return triggers.get_state()
 end
 
 function M._parse_buddy_response(response)

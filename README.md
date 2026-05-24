@@ -17,6 +17,12 @@ require("buddy").setup({
     auto_start = true,
     startup_timeout_ms = 5000,
   },
+  triggers = {
+    debounce_ms = 2000,
+    cooldown_ms = 1 * 60 * 1000,
+    max_proactive_calls = nil,
+    debug = false,
+  },
 })
 ```
 
@@ -30,8 +36,9 @@ require("buddy").setup({
 - `:BuddyBackendHealth` checks whether the configured OpenCode daemon is reachable.
 - `:BuddyBackendTest` sends the current context to OpenCode and writes the response to the chat.
 
-For now, starting a session records session state and starts OpenCode if it is not already running.
-User questions and backend test calls are manual commands; background observers are not registered yet.
+Starting a session records session state, starts OpenCode if it is not already running, and registers
+proactive observers for writes, diagnostics, and new TODO/FIXME/HACK markers. User questions bypass
+trigger cooldown and optional proactive call limits.
 
 The chat UI uses a read-only history window and a separate input field below it. Type into the input
 field and press `<CR>` to send the question. While Buddy is working, the input field title shows a
@@ -44,6 +51,13 @@ small spinner. Close the chat with insert-mode `<Esc>`, normal-mode `q`, normal-
 Buddy can collect the current buffer, cursor position, diagnostics, `git diff`, and files from
 `additional_context`. Files from `additional_context` are read-only inputs; small text files are
 included inline, while large or sensitive files are only listed or skipped.
+
+## Proactive Triggers
+
+Buddy waits for `triggers.debounce_ms` after trigger events before checking context. Proactive backend
+calls respect `triggers.cooldown_ms`. `triggers.max_proactive_calls` is optional cost control; when it
+is `nil`, there is no per-session maximum. Set `triggers.debug = true` to show trigger decisions via
+`vim.notify`.
 
 ## OpenCode Backend
 

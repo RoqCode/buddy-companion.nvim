@@ -25,6 +25,7 @@ require("buddy").setup({
 - `:BuddyStart` starts a new in-memory Buddy session.
 - `:BuddyStop` stops the active session and clears session state.
 - `:BuddyChat` opens the rolling chat window for the current session.
+- `:BuddyChatClose` closes the chat history and input windows.
 - `:BuddyAsk` prompts for a user question and sends it with the current context to OpenCode.
 - `:BuddyBackendHealth` checks whether the configured OpenCode daemon is reachable.
 - `:BuddyBackendTest` sends the current context to OpenCode and writes the response to the chat.
@@ -32,8 +33,11 @@ require("buddy").setup({
 For now, starting a session records session state and starts OpenCode if it is not already running.
 User questions and backend test calls are manual commands; background observers are not registered yet.
 
-The chat window wraps long lines and includes a simple input line at the bottom. Type after `>` and
-press `<CR>` to send the question. `:BuddyAsk` remains available as an alternate prompt-based flow.
+The chat UI uses a read-only history window and a separate input field below it. Type into the input
+field and press `<CR>` to send the question. While Buddy is working, the input field title shows a
+small spinner. Close the chat with insert-mode `<Esc>`, normal-mode `q`, normal-mode `<Esc>`,
+`<C-w>q`, or `:BuddyChatClose`.
+`:BuddyAsk` remains available as an alternate prompt-based flow.
 
 ## Context Collection
 

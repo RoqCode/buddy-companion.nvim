@@ -10,6 +10,11 @@ With a plugin manager, load this repository as a local plugin and call:
 ```lua
 require("buddy").setup({
   additional_context = ".local",
+  opencode = {
+    base_url = "http://127.0.0.1:4096",
+    agent = "buddy",
+    timeout_ms = 30000,
+  },
 })
 ```
 
@@ -18,12 +23,30 @@ require("buddy").setup({
 - `:BuddyStart` starts a new in-memory Buddy session.
 - `:BuddyStop` stops the active session and clears session state.
 - `:BuddyChat` opens the rolling chat window for the current session.
+- `:BuddyBackendHealth` checks whether the configured OpenCode daemon is reachable.
+- `:BuddyBackendTest` sends the current context to OpenCode and writes the response to the chat.
 
-For now, starting a session only records session state and enables the rolling chat. It does not
-register background observers or call a backend yet.
+For now, starting a session records session state and enables the rolling chat. Backend calls are
+manual commands; background observers are not registered yet.
 
 ## Context Collection
 
 Buddy can collect the current buffer, cursor position, diagnostics, `git diff`, and files from
 `additional_context`. Files from `additional_context` are read-only inputs; small text files are
 included inline, while large or sensitive files are only listed or skipped.
+
+## OpenCode Backend
+
+Start OpenCode separately, for example:
+
+```sh
+opencode serve --port 4096 --hostname 127.0.0.1
+```
+
+This plugin uses OpenCode `1.15.10` routes discovered from `GET /doc`:
+
+- `GET /global/health`
+- `POST /session`
+- `POST /session/{sessionID}/message`
+
+`:BuddyBackendTest` may invoke the configured model and therefore can incur provider cost.

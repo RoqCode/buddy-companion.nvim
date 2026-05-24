@@ -1,16 +1,11 @@
-local config = require("buddy.config")
 local session = require("buddy.session")
+local additional_context = require("buddy.context.additional")
 
 local M = {}
 
-local uv = vim.uv or vim.loop
-local ADDITIONAL_CONTEXT_FILE_LIMIT = 50 * 1024
-local ADDITIONAL_CONTEXT_TOTAL_LIMIT = 200 * 1024
-
-local function path_join(...)
-  local parts = { ... }
-  return table.concat(parts, "/"):gsub("//+", "/")
-end
+local GIT_DIFF_LIMIT = 200 * 1024
+local GIT_DIFF_TIMEOUT_MS = 2000
+local UNTRACKED_FILES_LIMIT = 100
 
 local function relative_path(path, root)
   local prefix = root:gsub("/$", "") .. "/"
@@ -30,46 +25,6 @@ local function severity_name(severity)
   end
 
   return tostring(severity)
-end
-
-local function is_sensitive_path(path)
-  local lower_path = path:lower()
-  local basename = vim.fs.basename(lower_path)
-
-  if basename:match("^%.env") then
-    return true
-  end
-
-  return lower_path:match("%.pem$")
-    or lower_path:match("%.key$")
-    or lower_path:match("%.crt$")
-    or lower_path:match("%.p12$")
-    or lower_path:match("token") ~= nil
-    or lower_path:match("secret") ~= nil
-end
-
-local function looks_binary(content)
-  return content:find("%z") ~= nil
-end
-
-local function read_small_text_file(path, size, remaining_bytes)
-  if size > ADDITIONAL_CONTEXT_FILE_LIMIT or size > remaining_bytes then
-    return nil
-  end
-
-  local ok, lines = pcall(vim.fn.readfile, path, "b")
-
-  if not ok then
-    return nil
-  end
-
-  local content = table.concat(lines, "\n")
-
-  if looks_binary(content) then
-    return nil
-  end
-
-  return content
 end
 
 local function collect_buffer_context()
@@ -109,11 +64,25 @@ local function collect_diagnostics(current_session)
   return diagnostics
 end
 
+local parse_git_diff_result
+local parse_untracked_files_result
+
 local function collect_git_diff(current_session)
-  local result = vim.system({ "git", "diff", "--" }, {
+  local result = vim.system({ "git", "diff", "HEAD", "--" }, {
     cwd = current_session.workspace_root,
     text = true,
-  }):wait()
+  }):wait(GIT_DIFF_TIMEOUT_MS)
+  return parse_git_diff_result(result)
+end
+
+function parse_git_diff_result(result)
+  if not result then
+    return {
+      available = false,
+      content = "",
+      error = "git diff timed out",
+    }
+  end
 
   if result.code ~= 0 then
     return {
@@ -123,78 +92,79 @@ local function collect_git_diff(current_session)
     }
   end
 
+  local content = result.stdout or ""
+  local truncated = false
+
+  if #content > GIT_DIFF_LIMIT then
+    content = content:sub(1, GIT_DIFF_LIMIT)
+    truncated = true
+  end
+
   return {
     available = true,
-    content = result.stdout or "",
+    content = content,
+    truncated = truncated,
+    limit = GIT_DIFF_LIMIT,
   }
 end
 
-local function collect_additional_context(current_session)
-  local current_config = config.get()
-  local configured_path = current_config.additional_context
+local function collect_untracked_files(current_session)
+  local result = vim.system({ "git", "ls-files", "--others", "--exclude-standard" }, {
+    cwd = current_session.workspace_root,
+    text = true,
+  }):wait(GIT_DIFF_TIMEOUT_MS)
+  return parse_untracked_files_result(result)
+end
 
-  if not configured_path or configured_path == "" then
-    return {
-      root = nil,
-      files = {},
-    }
-  end
+local function run_git_async(args, current_session, on_result)
+  local done = false
+  local job = nil
 
-  local root = path_join(current_session.workspace_root, configured_path)
-  local stat = uv.fs_stat(root)
+  job = vim.system(args, {
+    cwd = current_session.workspace_root,
+    text = true,
+  }, function(result)
+    if done then
+      return
+    end
 
-  if not stat or stat.type ~= "directory" then
-    return {
-      root = configured_path,
-      files = {},
-    }
+    done = true
+    vim.schedule(function()
+      on_result(result)
+    end)
+  end)
+
+  vim.defer_fn(function()
+    if done then
+      return
+    end
+
+    done = true
+
+    if job then
+      job:kill(15)
+    end
+
+    on_result(nil)
+  end, GIT_DIFF_TIMEOUT_MS)
+end
+
+function parse_untracked_files_result(result)
+  if not result or result.code ~= 0 then
+    return {}
   end
 
   local files = {}
-  local used_bytes = 0
 
-  for path, type in vim.fs.dir(root, { depth = math.huge }) do
-    if type == "file" then
-      local absolute_path = path_join(root, path)
-      local file_stat = uv.fs_stat(absolute_path)
-      local size = file_stat and file_stat.size or 0
-      local content = nil
-      local skipped_reason = nil
+  for _, path in ipairs(vim.split(result.stdout or "", "\n", { plain = true, trimempty = true })) do
+    table.insert(files, path)
 
-      if is_sensitive_path(path) then
-        skipped_reason = "sensitive_path"
-      else
-        content = read_small_text_file(absolute_path, size, ADDITIONAL_CONTEXT_TOTAL_LIMIT - used_bytes)
-
-        if content then
-          used_bytes = used_bytes + #content
-        elseif size > ADDITIONAL_CONTEXT_FILE_LIMIT then
-          skipped_reason = "file_too_large"
-        elseif size > (ADDITIONAL_CONTEXT_TOTAL_LIMIT - used_bytes) then
-          skipped_reason = "total_limit_reached"
-        else
-          skipped_reason = "not_text_or_unreadable"
-        end
-      end
-
-      table.insert(files, {
-        path = path_join(configured_path, path),
-        size = size,
-        mtime = file_stat and file_stat.mtime and file_stat.mtime.sec or nil,
-        content = content,
-        skipped_reason = skipped_reason,
-      })
+    if #files >= UNTRACKED_FILES_LIMIT then
+      break
     end
   end
 
-  table.sort(files, function(left, right)
-    return left.path < right.path
-  end)
-
-  return {
-    root = configured_path,
-    files = files,
-  }
+  return files
 end
 
 function M.collect()
@@ -210,8 +180,50 @@ function M.collect()
     buffer = collect_buffer_context(),
     diagnostics = collect_diagnostics(current_session),
     git_diff = collect_git_diff(current_session),
-    additional_context = collect_additional_context(current_session),
+    untracked_files = collect_untracked_files(current_session),
+    additional_context = additional_context.collect(current_session),
   }
+end
+
+function M.collect_async(callback)
+  local current_session = session.current()
+
+  if not current_session.active then
+    vim.notify("No active Buddy session", vim.log.levels.INFO)
+    callback(nil)
+    return
+  end
+
+  local pending = 2
+  local git_diff = nil
+  local untracked_files = nil
+
+  local function finish()
+    pending = pending - 1
+
+    if pending > 0 then
+      return
+    end
+
+    callback({
+      workspace_root = current_session.workspace_root,
+      buffer = collect_buffer_context(),
+      diagnostics = collect_diagnostics(current_session),
+      git_diff = git_diff,
+      untracked_files = untracked_files,
+      additional_context = additional_context.collect(current_session),
+    })
+  end
+
+  run_git_async({ "git", "diff", "HEAD", "--" }, current_session, function(result)
+    git_diff = parse_git_diff_result(result)
+    finish()
+  end)
+
+  run_git_async({ "git", "ls-files", "--others", "--exclude-standard" }, current_session, function(result)
+    untracked_files = parse_untracked_files_result(result)
+    finish()
+  end)
 end
 
 return M

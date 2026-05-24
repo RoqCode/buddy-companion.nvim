@@ -2,6 +2,11 @@ local M = {}
 
 local defaults = {
   additional_context = ".local",
+  opencode = {
+    base_url = "http://127.0.0.1:4096",
+    agent = "buddy",
+    timeout_ms = 30000,
+  },
 }
 
 local config = vim.deepcopy(defaults)

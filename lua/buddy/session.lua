@@ -8,9 +8,12 @@ local state = {
   workspace_root = nil,
   messages = {},
   backend_available = true,
+  backend_error_reported = false,
+  opencode_session_id = nil,
 }
 
 local on_change = nil
+local GIT_TIMEOUT_MS = 2000
 
 local function notify_change()
   if on_change then
@@ -23,9 +26,9 @@ local function current_working_directory()
 end
 
 local function find_workspace_root()
-  local result = vim.system({ "git", "rev-parse", "--show-toplevel" }, { text = true }):wait()
+  local result = vim.system({ "git", "rev-parse", "--show-toplevel" }, { text = true }):wait(GIT_TIMEOUT_MS)
 
-  if result.code == 0 then
+  if result and result.code == 0 then
     return vim.trim(result.stdout)
   end
 
@@ -38,6 +41,8 @@ local function reset()
   state.workspace_root = nil
   state.messages = {}
   state.backend_available = true
+  state.backend_error_reported = false
+  state.opencode_session_id = nil
 end
 
 function M.set_on_change(callback)
@@ -55,6 +60,8 @@ function M.start()
   state.workspace_root = find_workspace_root()
   state.messages = {}
   state.backend_available = true
+  state.backend_error_reported = false
+  state.opencode_session_id = nil
 
   notify_change()
   vim.notify("Buddy session started", vim.log.levels.INFO)
@@ -86,6 +93,33 @@ function M.append_message(role, content, meta)
 
   notify_change()
   return true
+end
+
+function M.set_backend_available(available)
+  state.backend_available = available
+
+  if available then
+    state.backend_error_reported = false
+  end
+
+  notify_change()
+end
+
+function M.report_backend_error(content)
+  state.backend_available = false
+
+  if state.backend_error_reported then
+    notify_change()
+    return false
+  end
+
+  state.backend_error_reported = true
+  return M.append_message("system", content)
+end
+
+function M.set_opencode_session_id(session_id)
+  state.opencode_session_id = session_id
+  notify_change()
 end
 
 function M.get()

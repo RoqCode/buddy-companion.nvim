@@ -14,6 +14,8 @@ require("buddy").setup({
     base_url = "http://127.0.0.1:4096",
     agent = "buddy",
     timeout_ms = 30000,
+    auto_start = true,
+    startup_timeout_ms = 5000,
   },
 })
 ```
@@ -23,11 +25,12 @@ require("buddy").setup({
 - `:BuddyStart` starts a new in-memory Buddy session.
 - `:BuddyStop` stops the active session and clears session state.
 - `:BuddyChat` opens the rolling chat window for the current session.
+- `:BuddyAsk` prompts for a user question and sends it with the current context to OpenCode.
 - `:BuddyBackendHealth` checks whether the configured OpenCode daemon is reachable.
 - `:BuddyBackendTest` sends the current context to OpenCode and writes the response to the chat.
 
-For now, starting a session records session state and enables the rolling chat. Backend calls are
-manual commands; background observers are not registered yet.
+For now, starting a session records session state and starts OpenCode if it is not already running.
+User questions and backend test calls are manual commands; background observers are not registered yet.
 
 ## Context Collection
 
@@ -37,11 +40,15 @@ included inline, while large or sensitive files are only listed or skipped.
 
 ## OpenCode Backend
 
-Start OpenCode separately, for example:
+`:BuddyStart` checks the configured OpenCode health endpoint. If no daemon is reachable and
+`opencode.auto_start` is enabled, Buddy starts:
 
 ```sh
 opencode serve --port 4096 --hostname 127.0.0.1
 ```
+
+`:BuddyStop` only stops a daemon that Buddy started itself. It does not stop an already-running
+OpenCode daemon.
 
 This plugin uses OpenCode `1.15.10` routes discovered from `GET /doc`:
 
@@ -49,4 +56,6 @@ This plugin uses OpenCode `1.15.10` routes discovered from `GET /doc`:
 - `POST /session`
 - `POST /session/{sessionID}/message`
 
-`:BuddyBackendTest` may invoke the configured model and therefore can incur provider cost.
+Backend calls such as `:BuddyAsk` and `:BuddyBackendTest` may invoke the configured model and
+therefore can incur provider cost or count against subscription usage limits. Starting the daemon
+alone should not call a model.

@@ -6,6 +6,8 @@ local defaults = {
     base_url = "http://127.0.0.1:4096",
     agent = "buddy",
     timeout_ms = 30000,
+    auto_start = true,
+    startup_timeout_ms = 5000,
   },
 }
 

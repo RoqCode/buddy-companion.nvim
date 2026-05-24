@@ -1,4 +1,6 @@
 local session = require("buddy.session")
+local context = require("buddy.context")
+local backend = require("buddy.backend")
 
 local M = {}
 
@@ -99,6 +101,40 @@ function M.open()
   })
 
   M.render()
+end
+
+function M.ask()
+  if not session.current().active then
+    vim.notify("No active Buddy session", vim.log.levels.INFO)
+    return
+  end
+
+  vim.ui.input({ prompt = "Ask Buddy: " }, function(question)
+    question = question and vim.trim(question) or ""
+
+    if question == "" then
+      return
+    end
+
+    session.append_message("user", question)
+
+    context.collect_async(function(collected_context)
+      if not collected_context then
+        return
+      end
+
+      backend.answer_async(collected_context, question, function(response, err)
+        if err then
+          session.report_backend_error("OpenCode backend error: " .. err)
+          return
+        end
+
+        session.append_message("buddy", response.message, {
+          reason = "user_question",
+        })
+      end)
+    end)
+  end)
 end
 
 return M

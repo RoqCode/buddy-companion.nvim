@@ -60,12 +60,53 @@ local function backend_test()
   end)
 end
 
+local function start()
+  local was_active = session.current().active
+
+  session.start()
+
+  if was_active or not session.current().active then
+    return
+  end
+
+  backend.ensure_daemon_async(function(response, err, started)
+    if err then
+      show_backend_error("OpenCode backend unavailable: " .. err)
+      return
+    end
+
+    local version = response.version or "unknown version"
+
+    if started then
+      show_status("OpenCode backend started: " .. version)
+    else
+      show_status("OpenCode backend healthy: " .. version)
+    end
+  end)
+end
+
+local function stop()
+  local stopped_daemon = backend.stop_daemon()
+
+  session.stop()
+
+  if stopped_daemon then
+    vim.notify("Buddy-managed OpenCode daemon stopped", vim.log.levels.INFO)
+  end
+end
+
 local function register_commands()
-  vim.api.nvim_create_user_command("BuddyStart", session.start, { force = true })
-  vim.api.nvim_create_user_command("BuddyStop", session.stop, { force = true })
+  vim.api.nvim_create_user_command("BuddyStart", start, { force = true })
+  vim.api.nvim_create_user_command("BuddyStop", stop, { force = true })
   vim.api.nvim_create_user_command("BuddyChat", chat.open, { force = true })
+  vim.api.nvim_create_user_command("BuddyAsk", chat.ask, { force = true })
   vim.api.nvim_create_user_command("BuddyBackendHealth", backend_health, { force = true })
   vim.api.nvim_create_user_command("BuddyBackendTest", backend_test, { force = true })
+
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = vim.api.nvim_create_augroup("BuddyCompanion", { clear = true }),
+    callback = backend.stop_daemon,
+  })
 end
 
 function M.setup(opts)

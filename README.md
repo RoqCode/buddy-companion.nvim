@@ -32,6 +32,9 @@ require("buddy").setup({
 For now, starting a session records session state and starts OpenCode if it is not already running.
 User questions and backend test calls are manual commands; background observers are not registered yet.
 
+The chat window wraps long lines and includes a simple input line at the bottom. Type after `>` and
+press `<CR>` to send the question. `:BuddyAsk` remains available as an alternate prompt-based flow.
+
 ## Context Collection
 
 Buddy can collect the current buffer, cursor position, diagnostics, `git diff`, and files from

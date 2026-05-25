@@ -70,23 +70,20 @@ end
 
 local function build_system_prompt()
 	return table.concat({
-		"You are Buddy, a read-only pair-programming companion inside Neovim.",
-		"You never edit files or suggest applying patches directly.",
-		"For proactive checks, prefer silence unless there is a concrete, useful observation.",
 		"Return only the requested JSON object.",
+		"Use should_speak=false unless the trigger reveals one concrete, actionable observation.",
+		"Do not include Markdown, code fences, or prose outside the JSON object.",
 	}, "\n")
 end
 
 local function build_answer_system_prompt()
 	return table.concat({
-		"You are Buddy, a read-only pair-programming companion inside Neovim.",
-		"Answer the user's question using the provided session context.",
-		"You never edit files or suggest applying patches directly.",
+		"Return only the requested JSON object.",
 		"If context is insufficient, say what is missing instead of guessing.",
 		"Put the direct natural-language answer in the message field.",
 		"Do not put another JSON object inside the message field.",
 		"Do not use should_speak, severity, or reason for user questions.",
-		"Return only the requested JSON object.",
+		"Do not include Markdown, code fences, or prose outside the JSON object.",
 	}, "\n")
 end
 

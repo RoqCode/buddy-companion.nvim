@@ -44,8 +44,8 @@ require("buddy").setup({
 - `:BuddyBackendTest` sends the current context to OpenCode and writes the response to the chat.
 
 Starting a session records session state, starts OpenCode if it is not already running, and registers
-proactive observers for writes, diagnostics, and new TODO/FIXME/HACK markers. User questions bypass
-proactive trigger budget and optional proactive call limits.
+proactive observers for editor activity. User questions bypass proactive trigger budget and optional
+proactive call limits.
 
 The chat UI uses a read-only history window and a separate input field below it. Type into the input
 field and press `<CR>` to send the question. While Buddy is working, the input field title shows a
@@ -61,10 +61,14 @@ included inline, while large or sensitive files are only listed or skipped.
 
 ## Proactive Triggers
 
-Buddy uses lane-based trigger heuristics for progress, struggle, and long low-level work. Set
-`triggers.personality` to tune the coarse behavior: `"chatty"`, `"normal"`, or `"almost_silent"`.
-The personality maps internally to lane thresholds, quiet windows, budget costs, and budget
-regeneration; these low-level values are intentionally not public API yet.
+Buddy uses lane-based trigger heuristics instead of direct event triggers. Text edits, saves,
+diagnostics, and TODO/FIXME/HACK markers are cheap signals that feed progress, struggle, or
+self-check lanes. A lane can dispatch only after its own timing rules, the shared attention budget,
+and the arbiter all agree; user questions stay outside this path.
+
+Set `triggers.personality` to tune the coarse behavior: `"chatty"`, `"normal"`, or
+`"almost_silent"`. The personality maps internally to lane thresholds, quiet windows, budget costs,
+and budget regeneration; these low-level values are intentionally not public API yet.
 
 `triggers.max_proactive_calls` is optional cost control; set it to a number to enable a per-session
 maximum, or `false` for no maximum. Set `triggers.debug = true` to show trigger decisions via

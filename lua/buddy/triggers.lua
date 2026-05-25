@@ -169,7 +169,8 @@ local function instruction_for(reason)
 	return table.concat({
 		"Proactive Buddy check triggered by " .. reason .. ".",
 		"Use the provided context to decide whether there is one concrete, useful thing to tell the user.",
-		"Prefer should_speak=false if the observation is generic, speculative, repeated, or not actionable.",
+		"Return outcome=\"silent_reset\" if the observation is generic, speculative, repeated, or not actionable.",
+		"Return outcome=\"silent_hold\" only if a useful observation may be forming but is not ready yet.",
 	}, "\n")
 end
 
@@ -232,9 +233,9 @@ local function run_backend_check(reason, bufnr)
 				return
 			end
 
-			debug("backend response should_speak=" .. tostring(response.should_speak))
+			debug("backend response outcome=" .. tostring(response.outcome))
 
-			if response.should_speak then
+			if response.outcome == "speak" then
 				local appended = session.append_message("buddy", response.message, {
 					severity = response.severity,
 					reason = response.reason,

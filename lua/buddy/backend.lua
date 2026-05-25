@@ -42,12 +42,12 @@ local function buddy_output_format()
 		schema = {
 			type = "object",
 			properties = {
-				should_speak = { type = "boolean" },
+				outcome = { type = "string", enum = { "speak", "silent_reset", "silent_hold" } },
 				severity = { type = "string", enum = { "info", "warning" } },
 				message = { type = "string" },
 				reason = { type = "string" },
 			},
-			required = { "should_speak", "severity", "message", "reason" },
+			required = { "outcome", "severity", "message", "reason" },
 			additionalProperties = false,
 		},
 	}
@@ -71,7 +71,8 @@ end
 local function build_system_prompt()
 	return table.concat({
 		"Return only the requested JSON object.",
-		"Use should_speak=false unless the trigger reveals one concrete, actionable observation.",
+		"Use outcome=\"silent_reset\" unless the trigger reveals one concrete, actionable observation.",
+		"Use outcome=\"silent_hold\" only when the context looks promising but not ready to interrupt yet.",
 		"Do not include Markdown, code fences, or prose outside the JSON object.",
 	}, "\n")
 end
@@ -82,7 +83,7 @@ local function build_answer_system_prompt()
 		"If context is insufficient, say what is missing instead of guessing.",
 		"Put the direct natural-language answer in the message field.",
 		"Do not put another JSON object inside the message field.",
-		"Do not use should_speak, severity, or reason for user questions.",
+		"Do not use outcome, severity, or reason for user questions.",
 		"Do not include Markdown, code fences, or prose outside the JSON object.",
 	}, "\n")
 end

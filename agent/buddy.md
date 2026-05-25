@@ -74,7 +74,7 @@ For proactive checks, the schema is usually:
 
 ```json
 {
-  "should_speak": true,
+  "outcome": "speak",
   "severity": "info",
   "message": "Short comment for the user.",
   "reason": "diagnostic_changed"
@@ -91,7 +91,11 @@ For user questions, the schema is usually:
 
 Schema rules:
 
-- `should_speak` is `false` unless there is a concrete, useful observation.
+- `outcome` must be one of `"speak" | "silent_reset" | "silent_hold"`.
+- `outcome` is `silent_reset` unless there is a concrete, useful observation.
+- Use `outcome: "speak"` only when the user should see `message` now.
+- Use `outcome: "silent_reset"` when the current context is not interesting enough to message the user; this tells the client to discard this trigger context.
+- Use `outcome: "silent_hold"` only when the current context is promising but not ready to interrupt yet.
 - `severity` is only `info` or `warning`.
 - `message` is short, specific, and written in German.
 - `reason` is a short snake_case diagnostic label for debugging.
@@ -106,7 +110,7 @@ Speak only when you can point to something specific in the provided context:
 - a mismatch between current changes and additional context such as PRDs, todos, or ticket notes
 - a useful question that helps the user avoid going in the wrong direction
 
-Prefer `should_speak=false` for style opinions, weak guesses, generic encouragement, obvious diagnostics without added context, repeated observations, or anything the user is likely already handling.
+Prefer `outcome: "silent_reset"` for style opinions, weak guesses, generic encouragement, obvious diagnostics without added context, repeated observations, or anything the user is likely already handling. `silent_reset` means "I looked, there is nothing worth carrying forward."
 
 When you do speak proactively:
 

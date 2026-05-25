@@ -52,8 +52,8 @@ function M.parse_buddy_response(response)
 		decoded = parsed
 	end
 
-	if type(decoded.should_speak) ~= "boolean" then
-		return nil, "Buddy JSON missing boolean should_speak"
+	if decoded.outcome ~= "speak" and decoded.outcome ~= "silent_reset" and decoded.outcome ~= "silent_hold" then
+		return nil, "Buddy JSON has invalid outcome"
 	end
 
 	if decoded.severity ~= "info" and decoded.severity ~= "warning" then
@@ -66,6 +66,10 @@ function M.parse_buddy_response(response)
 
 	if type(decoded.reason) ~= "string" then
 		return nil, "Buddy JSON missing reason"
+	end
+
+	if decoded.outcome == "speak" and decoded.message == "" then
+		return nil, "Buddy JSON speak outcome missing message"
 	end
 
 	return decoded, nil

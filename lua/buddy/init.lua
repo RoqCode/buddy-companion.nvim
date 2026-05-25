@@ -49,7 +49,7 @@ local function backend_test()
 
     backend.prompt_async(
       collected_context,
-      "Manual backend test. Say whether there is anything important to mention about this current context. Prefer should_speak=false unless something is concrete.",
+      "Manual backend test. Say whether there is anything important to mention about this current context. Prefer outcome=\"silent_reset\" unless something is concrete.",
       function(response, err)
         if not session.current().active or session.current().generation ~= generation then
           return
@@ -60,7 +60,7 @@ local function backend_test()
           return
         end
 
-        if response.should_speak then
+        if response.outcome == "speak" then
           session.append_message("buddy", response.message, {
             severity = response.severity,
             reason = response.reason,

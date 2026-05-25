@@ -130,6 +130,15 @@ function Lane:hold(now)
 	self.peak_mass = self.mass
 end
 
+function Lane:lower_threshold(amount)
+	if not self.threshold then
+		return false
+	end
+
+	self.threshold = math.max(self.params.arming_mass, self.threshold - amount)
+	return true
+end
+
 function Lane:get_state()
 	return {
 		mass = self.mass,

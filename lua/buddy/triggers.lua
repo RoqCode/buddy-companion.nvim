@@ -3,6 +3,7 @@ local session = require("buddy.session")
 local context = require("buddy.context")
 local backend = require("buddy.backend")
 local notification = require("buddy.notify")
+local lane = require("buddy.triggers.lane")
 
 local M = {}
 
@@ -17,15 +18,28 @@ local state = {
 	pending_bufnr = nil,
 	last_prompt_at = nil,
 	proactive_calls = 0,
-	diff_hash = nil,
-	diff_request_id = 0,
 	diagnostic_signatures = {},
-	todo_signatures = {},
+	progress = nil,
 	running = false,
 }
 
 local MAX_TODO_SCAN_LINES = 5000
 local schedule
+
+local PROGRESS_PARAMS = {
+	base = 0.5,
+	decay_factor = 0.5,
+	decay_unit = 90 * 1000,
+	mass_ceiling = 18,
+	arming_mass = 3,
+	threshold_base = 7,
+	jitter = 1,
+	quiet_window = 6000,
+	hold_ratio = 0.85,
+}
+
+local TODO_PROGRESS_MASS = 0.75
+local SAVE_THRESHOLD_NUDGE = 1
 
 local IMPORTANT_DIAGNOSTICS = {
 	[vim.diagnostic.severity.ERROR] = true,
@@ -42,6 +56,15 @@ end
 
 local function stable_hash(value)
 	return vim.fn.sha256(value or "")
+end
+
+local function create_progress_state()
+	return {
+		lane = lane.new(PROGRESS_PARAMS),
+		buffers = {},
+		last_status = nil,
+		save_nudged = false,
+	}
 end
 
 local function current_generation()
@@ -61,10 +84,8 @@ local function reset_state()
 	state.pending_bufnr = nil
 	state.last_prompt_at = nil
 	state.proactive_calls = 0
-	state.diff_hash = nil
-	state.diff_request_id = 0
 	state.diagnostic_signatures = {}
-	state.todo_signatures = {}
+	state.progress = create_progress_state()
 	state.running = false
 end
 
@@ -119,10 +140,12 @@ local function collect_todo_signatures(bufnr)
 		return signatures
 	end
 
-	for line_number, line in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
+	for _, line in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
+		local trimmed = vim.trim(line)
+
 		for _, marker in ipairs({ "TODO", "FIXME", "HACK" }) do
 			if line:find(marker, 1, true) then
-				signatures[line_number .. "\0" .. marker] = true
+				signatures[marker .. "\0" .. stable_hash(trimmed)] = true
 			end
 		end
 	end
@@ -130,16 +153,18 @@ local function collect_todo_signatures(bufnr)
 	return signatures
 end
 
-local function has_new_todo_marker(bufnr, next_signatures)
-	local previous = state.todo_signatures[bufnr] or {}
+local function count_new_todo_markers(bufnr, next_signatures)
+	local progress = state.progress or create_progress_state()
+	local previous = (progress.buffers[bufnr] and progress.buffers[bufnr].todo_signatures) or {}
+	local count = 0
 
 	for signature in pairs(next_signatures) do
 		if not previous[signature] then
-			return true
+			count = count + 1
 		end
 	end
 
-	return false
+	return count
 end
 
 local function can_call_backend()
@@ -252,39 +277,6 @@ local function run_backend_check(reason, bufnr)
 	end, { source_buf = bufnr })
 end
 
-local function update_diff_baseline(callback)
-	local generation = state.generation
-	state.diff_request_id = state.diff_request_id + 1
-	local request_id = state.diff_request_id
-
-	context.collect_async(function(collected_context)
-		if not session.current().active or current_generation() ~= generation then
-			debug("diff baseline skipped because session changed")
-			callback(false)
-			return
-		end
-
-		if not collected_context or not collected_context.git_diff or not collected_context.git_diff.available then
-			debug("diff baseline unavailable")
-			callback(false)
-			return
-		end
-
-		if request_id ~= state.diff_request_id then
-			debug("ignored stale diff baseline result")
-			callback(false)
-			return
-		end
-
-		local next_hash = stable_hash(collected_context.git_diff.content)
-		local changed = state.diff_hash ~= nil and state.diff_hash ~= next_hash
-
-		state.diff_hash = next_hash
-		debug("diff baseline updated changed=" .. tostring(changed))
-		callback(changed)
-	end)
-end
-
 local function evaluate_pending_trigger()
 	local reason = state.pending_reason
 	local bufnr = state.pending_bufnr
@@ -303,17 +295,6 @@ local function evaluate_pending_trigger()
 		state.pending_reason = reason
 		state.pending_bufnr = bufnr
 		debug("kept " .. reason .. " pending because a proactive check is already running")
-		return
-	end
-
-	if reason == "diff_changed" then
-		update_diff_baseline(function(changed)
-			if changed then
-				run_backend_check(reason, bufnr)
-			else
-				debug("diff unchanged after debounce")
-			end
-		end)
 		return
 	end
 
@@ -355,17 +336,89 @@ local function on_diagnostics_changed(bufnr)
 	end
 end
 
+local function progress_for_buffer(bufnr)
+	local progress = state.progress
+
+	if not progress then
+		progress = create_progress_state()
+		state.progress = progress
+	end
+
+	if not progress.buffers[bufnr] then
+		progress.buffers[bufnr] = {
+			line_count = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_line_count(bufnr) or 0,
+			todo_signatures = collect_todo_signatures(bufnr),
+		}
+	end
+
+	return progress, progress.buffers[bufnr]
+end
+
+local function poll_progress(now, signal)
+	local progress = state.progress
+
+	if not progress then
+		return nil
+	end
+
+	local status = progress.lane:poll(now, signal)
+	progress.last_status = status
+	debug("progress status=" .. status .. " mass=" .. string.format("%.2f", progress.lane.mass))
+	return status
+end
+
 local function on_text_changed()
 	local bufnr = vim.api.nvim_get_current_buf()
-	local next_signatures = collect_todo_signatures(bufnr)
-	local changed = has_new_todo_marker(bufnr, next_signatures)
 
-	state.todo_signatures[bufnr] = next_signatures
-
-	if changed then
-		debug("new TODO/FIXME/HACK marker detected")
-		schedule("todo_marker_added", bufnr)
+	if not vim.api.nvim_buf_is_valid(bufnr) or vim.bo[bufnr].buftype ~= "" then
+		return
 	end
+
+	local progress, buffer_state = progress_for_buffer(bufnr)
+	local now = uv.now()
+	local line_count = vim.api.nvim_buf_line_count(bufnr)
+	local next_signatures = collect_todo_signatures(bufnr)
+	local new_todos = count_new_todo_markers(bufnr, next_signatures)
+	local lines_delta = line_count - buffer_state.line_count
+	local signal_mass = PROGRESS_PARAMS.base + math.sqrt(math.abs(lines_delta))
+
+	if new_todos > 0 then
+		signal_mass = signal_mass + new_todos * TODO_PROGRESS_MASS
+	end
+
+	local status = progress.lane:poll(now, {
+		mass = signal_mass,
+	})
+
+	buffer_state.line_count = line_count
+	buffer_state.todo_signatures = next_signatures
+	progress.last_status = status
+	progress.save_nudged = false
+
+	if new_todos > 0 then
+		debug("new TODO/FIXME/HACK marker added passive progress mass=" .. tostring(signal_mass))
+	end
+
+	debug("progress text signal lines_delta=" .. tostring(lines_delta) .. " status=" .. status)
+end
+
+local function on_buffer_saved(bufnr)
+	local progress = state.progress
+
+	if not progress then
+		return
+	end
+
+	local changed = false
+
+	if not progress.save_nudged then
+		changed = progress.lane:lower_threshold(SAVE_THRESHOLD_NUDGE)
+		progress.save_nudged = changed
+	end
+
+	local status = poll_progress(uv.now())
+
+	debug("BufWritePost progress_nudge=" .. tostring(changed) .. " status=" .. tostring(status))
 end
 
 local function prime_baselines()
@@ -373,11 +426,9 @@ local function prime_baselines()
 
 	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
 		if vim.api.nvim_buf_is_loaded(bufnr) then
-			state.todo_signatures[bufnr] = collect_todo_signatures(bufnr)
+			progress_for_buffer(bufnr)
 		end
 	end
-
-	update_diff_baseline(function() end)
 end
 
 function M.start()
@@ -395,8 +446,7 @@ function M.start()
 	vim.api.nvim_create_autocmd("BufWritePost", {
 		group = group,
 		callback = function(event)
-			debug("BufWritePost")
-			schedule("diff_changed", event.buf)
+			on_buffer_saved(event.buf)
 		end,
 	})
 
@@ -427,7 +477,28 @@ function M.stop()
 end
 
 function M.get_state()
-	return vim.deepcopy(state)
+	local snapshot = {
+		active = state.active,
+		generation = state.generation,
+		debounce_timer = state.debounce_timer,
+		pending_reason = state.pending_reason,
+		pending_bufnr = state.pending_bufnr,
+		last_prompt_at = state.last_prompt_at,
+		proactive_calls = state.proactive_calls,
+		diagnostic_signatures = vim.deepcopy(state.diagnostic_signatures),
+		running = state.running,
+	}
+
+	if state.progress then
+		snapshot.progress = {
+			lane = state.progress.lane:get_state(),
+			last_status = state.progress.last_status,
+			save_nudged = state.progress.save_nudged,
+			buffers = vim.deepcopy(state.progress.buffers),
+		}
+	end
+
+	return snapshot
 end
 
 return M

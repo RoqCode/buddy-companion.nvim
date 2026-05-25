@@ -24,6 +24,7 @@ local state = {
 	self_check = nil,
 	budget = nil,
 	arbiter = nil,
+	trigger_profile = nil,
 	tick_timer = nil,
 	last_dispatch_bufnr = nil,
 	running = false,
@@ -32,27 +33,60 @@ local state = {
 local TICK_MS = 1500
 local SILENCE_MS = 1500
 
-local BUDGET_PARAMS = {
-	max = 10,
-	regen_factor = 0.5,
-	regen_unit = 60 * 1000,
+local TRIGGER_PROFILES = {
+	chatty = {
+		personality = "chatty",
+		budget = { max = 12, regen_factor = 0.45, regen_unit = 45 * 1000 },
+		progress = { threshold_base = 5.5, quiet_window = 4500 },
+		struggle = { threshold_base = 3, quiet_window = 900 },
+		self_check = { check_after_ms = 6 * 60 * 1000, activity_idle_ms = 75 * 1000 },
+		gates = {
+			progress = { cost = 3, normal_threshold = 4 },
+			struggle = { cost = 1.5, normal_threshold = 3, breakthrough_threshold = 1 },
+			self_check = { cost = 4, normal_threshold = 5 },
+		},
+	},
+	normal = {
+		personality = "normal",
+		budget = { max = 10, regen_factor = 0.5, regen_unit = 60 * 1000 },
+		progress = { threshold_base = 7, quiet_window = 6000 },
+		struggle = { threshold_base = 3.5, quiet_window = 1200 },
+		self_check = { check_after_ms = 10 * 60 * 1000, activity_idle_ms = 60 * 1000 },
+		gates = {
+			progress = { cost = 4, normal_threshold = 5 },
+			struggle = { cost = 2, normal_threshold = 4, breakthrough_threshold = 1.5 },
+			self_check = { cost = 5, normal_threshold = 6 },
+		},
+	},
+	almost_silent = {
+		personality = "almost_silent",
+		budget = { max = 8, regen_factor = 0.55, regen_unit = 90 * 1000 },
+		progress = { threshold_base = 9, quiet_window = 9000 },
+		struggle = { threshold_base = 4.5, quiet_window = 1800 },
+		self_check = { check_after_ms = 18 * 60 * 1000, activity_idle_ms = 45 * 1000 },
+		gates = {
+			progress = { cost = 5, normal_threshold = 6.5 },
+			struggle = { cost = 2.5, normal_threshold = 5, breakthrough_threshold = 2 },
+			self_check = { cost = 6, normal_threshold = 7 },
+		},
+	},
 }
 
-local PROGRESS_GATE = {
-	cost = 4,
-	normal_threshold = 5,
-}
+local function resolve_trigger_profile()
+	local trigger_config = config.get().triggers or {}
+	local personality = trigger_config.personality or "normal"
+	local profile = TRIGGER_PROFILES[personality]
 
-local STRUGGLE_GATE = {
-	cost = 2,
-	normal_threshold = 4,
-	breakthrough_threshold = 1.5,
-}
+	if not profile then
+		vim.notify(
+			"Buddy trigger: unknown personality " .. tostring(personality) .. ", falling back to normal",
+			vim.log.levels.WARN
+		)
+		profile = TRIGGER_PROFILES.normal
+	end
 
-local SELF_CHECK_GATE = {
-	cost = 5,
-	normal_threshold = 6,
-}
+	return vim.deepcopy(profile)
+end
 
 local function debug(message)
 	local trigger_config = config.get().triggers or {}
@@ -63,12 +97,13 @@ local function debug(message)
 end
 
 local function create_runtime()
-	local progress = progress_lane.new()
-	local struggle = struggle_lane.new()
-	local self_check = self_check_lane.new()
-	local attention_budget = budget.new(BUDGET_PARAMS)
+	local profile = resolve_trigger_profile()
+	local progress = progress_lane.new(profile.progress)
+	local struggle = struggle_lane.new(profile.struggle)
+	local self_check = self_check_lane.new(profile.self_check)
+	local attention_budget = budget.new(profile.budget)
 
-	return progress, struggle, self_check, attention_budget, arbiter.new({
+	return progress, struggle, self_check, attention_budget, profile, arbiter.new({
 		budget = attention_budget,
 		silence_ms = SILENCE_MS,
 		lanes = {
@@ -76,19 +111,19 @@ local function create_runtime()
 				name = "struggle",
 				lane = struggle.lane,
 				priority = 1,
-				gate = STRUGGLE_GATE,
+				gate = profile.gates.struggle,
 			},
 			{
 				name = "progress",
 				lane = progress.lane,
 				priority = 2,
-				gate = PROGRESS_GATE,
+				gate = profile.gates.progress,
 			},
 			{
 				name = "self_check",
 				lane = self_check,
 				priority = 3,
-				gate = SELF_CHECK_GATE,
+				gate = profile.gates.self_check,
 			},
 		},
 	})
@@ -104,7 +139,7 @@ local function reset_state()
 		state.tick_timer:close()
 	end
 
-	local progress, struggle, self_check, attention_budget, attention_arbiter = create_runtime()
+	local progress, struggle, self_check, attention_budget, trigger_profile, attention_arbiter = create_runtime()
 
 	state.active = false
 	state.generation = nil
@@ -115,6 +150,7 @@ local function reset_state()
 	state.self_check = self_check
 	state.budget = attention_budget
 	state.arbiter = attention_arbiter
+	state.trigger_profile = trigger_profile
 	state.tick_timer = nil
 	state.last_dispatch_bufnr = nil
 	state.running = false
@@ -459,6 +495,7 @@ function M.get_state()
 		generation = state.generation,
 		proactive_calls = state.proactive_calls,
 		diagnostic_signatures = vim.deepcopy(state.diagnostic_signatures),
+		trigger_profile = vim.deepcopy(state.trigger_profile),
 		last_dispatch_bufnr = state.last_dispatch_bufnr,
 		running = state.running,
 	}

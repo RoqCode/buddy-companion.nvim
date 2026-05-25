@@ -62,9 +62,11 @@ function M.has_new_diagnostics(previous_signatures, next_signatures)
 	return false
 end
 
-function M.new()
+function M.new(opts)
+	opts = opts or {}
+
 	return {
-		lane = lane.new(PARAMS),
+		lane = lane.new(vim.tbl_extend("force", PARAMS, opts)),
 		buffers = {},
 		pending_diagnostics = {},
 		last_status = nil,

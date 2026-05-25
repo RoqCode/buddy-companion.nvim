@@ -10,8 +10,7 @@ local defaults = {
 		startup_timeout_ms = 5000,
 	},
 	triggers = {
-		debounce_ms = 2000,
-		cooldown_ms = 1 * 60 * 1000,
+		personality = "normal",
 		max_proactive_calls = false,
 		debug = false,
 	},

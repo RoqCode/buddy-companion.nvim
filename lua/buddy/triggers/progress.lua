@@ -68,9 +68,11 @@ local function count_new_todo_markers(buffer_state, next_signatures)
 	return count
 end
 
-function M.new()
+function M.new(opts)
+	opts = opts or {}
+
 	return {
-		lane = lane.new(PARAMS),
+		lane = lane.new(vim.tbl_extend("force", PARAMS, opts)),
 		buffers = {},
 		last_status = nil,
 		save_nudged = false,

@@ -21,8 +21,7 @@ require("buddy").setup({
     startup_timeout_ms = 5000,
   },
   triggers = {
-    debounce_ms = 2000,
-    cooldown_ms = 1 * 60 * 1000,
+    personality = "normal",
     max_proactive_calls = false,
     debug = false,
   },
@@ -46,7 +45,7 @@ require("buddy").setup({
 
 Starting a session records session state, starts OpenCode if it is not already running, and registers
 proactive observers for writes, diagnostics, and new TODO/FIXME/HACK markers. User questions bypass
-trigger cooldown and optional proactive call limits.
+proactive trigger budget and optional proactive call limits.
 
 The chat UI uses a read-only history window and a separate input field below it. Type into the input
 field and press `<CR>` to send the question. While Buddy is working, the input field title shows a
@@ -62,10 +61,15 @@ included inline, while large or sensitive files are only listed or skipped.
 
 ## Proactive Triggers
 
-Buddy waits for `triggers.debounce_ms` after trigger events before checking context. Proactive backend
-calls respect `triggers.cooldown_ms`. `triggers.max_proactive_calls` is optional cost control; set it
-to a number to enable a per-session maximum, or `false` for no maximum. Set `triggers.debug = true` to
-show trigger decisions via `vim.notify`.
+Buddy uses lane-based trigger heuristics for progress, struggle, and long low-level work. Set
+`triggers.personality` to tune the coarse behavior: `"chatty"`, `"normal"`, or `"almost_silent"`.
+The personality maps internally to lane thresholds, quiet windows, budget costs, and budget
+regeneration; these low-level values are intentionally not public API yet.
+
+`triggers.max_proactive_calls` is optional cost control; set it to a number to enable a per-session
+maximum, or `false` for no maximum. Set `triggers.debug = true` to show trigger decisions via
+`vim.notify`. `require("buddy")._trigger_state()` exposes the resolved internal trigger profile for
+debugging.
 
 ## Notifications
 

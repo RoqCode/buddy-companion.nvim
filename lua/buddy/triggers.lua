@@ -7,6 +7,7 @@ local budget = require("buddy.triggers.budget")
 local arbiter = require("buddy.triggers.arbiter")
 local progress_lane = require("buddy.triggers.progress")
 local struggle_lane = require("buddy.triggers.struggle")
+local self_check_lane = require("buddy.triggers.self_check")
 
 local M = {}
 
@@ -20,6 +21,7 @@ local state = {
 	diagnostic_signatures = {},
 	progress = nil,
 	struggle = nil,
+	self_check = nil,
 	budget = nil,
 	arbiter = nil,
 	tick_timer = nil,
@@ -47,6 +49,11 @@ local STRUGGLE_GATE = {
 	breakthrough_threshold = 1.5,
 }
 
+local SELF_CHECK_GATE = {
+	cost = 5,
+	normal_threshold = 6,
+}
+
 local function debug(message)
 	local trigger_config = config.get().triggers or {}
 
@@ -58,9 +65,10 @@ end
 local function create_runtime()
 	local progress = progress_lane.new()
 	local struggle = struggle_lane.new()
+	local self_check = self_check_lane.new()
 	local attention_budget = budget.new(BUDGET_PARAMS)
 
-	return progress, struggle, attention_budget, arbiter.new({
+	return progress, struggle, self_check, attention_budget, arbiter.new({
 		budget = attention_budget,
 		silence_ms = SILENCE_MS,
 		lanes = {
@@ -76,6 +84,12 @@ local function create_runtime()
 				priority = 2,
 				gate = PROGRESS_GATE,
 			},
+			{
+				name = "self_check",
+				lane = self_check,
+				priority = 3,
+				gate = SELF_CHECK_GATE,
+			},
 		},
 	})
 end
@@ -90,7 +104,7 @@ local function reset_state()
 		state.tick_timer:close()
 	end
 
-	local progress, struggle, attention_budget, attention_arbiter = create_runtime()
+	local progress, struggle, self_check, attention_budget, attention_arbiter = create_runtime()
 
 	state.active = false
 	state.generation = nil
@@ -98,6 +112,7 @@ local function reset_state()
 	state.diagnostic_signatures = {}
 	state.progress = progress
 	state.struggle = struggle
+	state.self_check = self_check
 	state.budget = attention_budget
 	state.arbiter = attention_arbiter
 	state.tick_timer = nil
@@ -139,6 +154,17 @@ local function instruction_for(lane_name)
 		}, "\n")
 	end
 
+	if lane_name == "self_check" then
+		return table.concat({
+			"Proactive Buddy check triggered by the Self-Check lane.",
+			"The user has been doing continuous low-level work without another lane producing a useful intervention.",
+			"Inspect the current context freely: recent diff, diagnostics, local notes, and active buffer.",
+			"Speak only if there is one concrete observation, risk, useful question, or well-earned reassurance.",
+			"Return outcome=\"silent_reset\" if there is nothing useful enough to interrupt the user.",
+			"Return outcome=\"silent_hold\" if the situation looks promising but needs a little more work before speaking.",
+		}, "\n")
+	end
+
 	return table.concat({
 		"Proactive Buddy check triggered by the " .. lane_name .. " lane.",
 		"Use the provided context to decide whether there is one concrete, useful thing to tell the user.",
@@ -164,7 +190,17 @@ local function lane_for_name(lane_name)
 		return state.struggle.lane
 	end
 
+	if lane_name == "self_check" and state.self_check then
+		return state.self_check
+	end
+
 	return nil
+end
+
+local function reset_self_check_after_dispatch(now)
+	if state.self_check then
+		state.self_check:reset(now)
+	end
 end
 
 local function apply_backend_outcome(lane_name, outcome, now)
@@ -202,6 +238,7 @@ local function run_backend_check(lane_name, bufnr)
 	local generation = state.generation
 	state.running = true
 	state.proactive_calls = state.proactive_calls + 1
+	reset_self_check_after_dispatch(uv.now())
 	debug("backend check started for " .. lane_name)
 
 	context.collect_async(function(collected_context)
@@ -258,6 +295,10 @@ end
 local function on_diagnostics_changed(bufnr)
 	local next_signatures = struggle_lane.collect_diagnostic_signatures()
 	local now = uv.now()
+
+	if state.self_check then
+		state.self_check:on_activity(now)
+	end
 
 	if state.struggle then
 		struggle_lane.on_diagnostics_changed(state.struggle, state.diagnostic_signatures, next_signatures, bufnr, now, debug)
@@ -330,6 +371,10 @@ local function on_text_changed()
 	local _, lines_delta = progress_lane.on_text_changed(state.progress, bufnr, now, debug)
 	state.last_dispatch_bufnr = bufnr
 
+	if state.self_check then
+		state.self_check:on_activity(now)
+	end
+
 	if state.struggle then
 		struggle_lane.on_text_changed(state.struggle, bufnr, now, cursor[1], lines_delta, debug)
 	end
@@ -337,12 +382,18 @@ end
 
 local function on_buffer_saved(bufnr)
 	local progress = state.progress
+	local now = uv.now()
 
 	if not progress then
 		return
 	end
 
-	progress_lane.on_buffer_saved(progress, uv.now(), debug)
+	progress_lane.on_buffer_saved(progress, now, debug)
+
+	if state.self_check then
+		state.self_check:on_activity(now)
+	end
+
 	state.last_dispatch_bufnr = bufnr
 end
 
@@ -418,6 +469,10 @@ function M.get_state()
 
 	if state.struggle then
 		snapshot.struggle = struggle_lane.snapshot(state.struggle)
+	end
+
+	if state.self_check then
+		snapshot.self_check = self_check_lane.snapshot(state.self_check)
 	end
 
 	if state.budget then

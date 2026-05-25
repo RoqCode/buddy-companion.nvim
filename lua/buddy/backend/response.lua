@@ -52,6 +52,10 @@ function M.parse_buddy_response(response)
 		decoded = parsed
 	end
 
+	if type(decoded) ~= "table" then
+		return nil, "OpenCode response was not valid Buddy JSON"
+	end
+
 	if decoded.outcome ~= "speak" and decoded.outcome ~= "silent_reset" and decoded.outcome ~= "silent_hold" then
 		return nil, "Buddy JSON has invalid outcome"
 	end

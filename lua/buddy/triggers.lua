@@ -3,7 +3,10 @@ local session = require("buddy.session")
 local context = require("buddy.context")
 local backend = require("buddy.backend")
 local notification = require("buddy.notify")
-local lane = require("buddy.triggers.lane")
+local budget = require("buddy.triggers.budget")
+local arbiter = require("buddy.triggers.arbiter")
+local progress_lane = require("buddy.triggers.progress")
+local struggle_lane = require("buddy.triggers.struggle")
 
 local M = {}
 
@@ -13,37 +16,35 @@ local group = nil
 local state = {
 	active = false,
 	generation = nil,
-	debounce_timer = nil,
-	pending_reason = nil,
-	pending_bufnr = nil,
-	last_prompt_at = nil,
 	proactive_calls = 0,
 	diagnostic_signatures = {},
 	progress = nil,
+	struggle = nil,
+	budget = nil,
+	arbiter = nil,
+	tick_timer = nil,
+	last_dispatch_bufnr = nil,
 	running = false,
 }
 
-local MAX_TODO_SCAN_LINES = 5000
-local schedule
+local TICK_MS = 1500
+local SILENCE_MS = 1500
 
-local PROGRESS_PARAMS = {
-	base = 0.5,
-	decay_factor = 0.5,
-	decay_unit = 90 * 1000,
-	mass_ceiling = 18,
-	arming_mass = 3,
-	threshold_base = 7,
-	jitter = 1,
-	quiet_window = 6000,
-	hold_ratio = 0.85,
+local BUDGET_PARAMS = {
+	max = 10,
+	regen_factor = 0.5,
+	regen_unit = 60 * 1000,
 }
 
-local TODO_PROGRESS_MASS = 0.75
-local SAVE_THRESHOLD_NUDGE = 1
+local PROGRESS_GATE = {
+	cost = 4,
+	normal_threshold = 5,
+}
 
-local IMPORTANT_DIAGNOSTICS = {
-	[vim.diagnostic.severity.ERROR] = true,
-	[vim.diagnostic.severity.WARN] = true,
+local STRUGGLE_GATE = {
+	cost = 2,
+	normal_threshold = 4,
+	breakthrough_threshold = 1.5,
 }
 
 local function debug(message)
@@ -54,17 +55,29 @@ local function debug(message)
 	end
 end
 
-local function stable_hash(value)
-	return vim.fn.sha256(value or "")
-end
+local function create_runtime()
+	local progress = progress_lane.new()
+	local struggle = struggle_lane.new()
+	local attention_budget = budget.new(BUDGET_PARAMS)
 
-local function create_progress_state()
-	return {
-		lane = lane.new(PROGRESS_PARAMS),
-		buffers = {},
-		last_status = nil,
-		save_nudged = false,
-	}
+	return progress, struggle, attention_budget, arbiter.new({
+		budget = attention_budget,
+		silence_ms = SILENCE_MS,
+		lanes = {
+			{
+				name = "struggle",
+				lane = struggle.lane,
+				priority = 1,
+				gate = STRUGGLE_GATE,
+			},
+			{
+				name = "progress",
+				lane = progress.lane,
+				priority = 2,
+				gate = PROGRESS_GATE,
+			},
+		},
+	})
 end
 
 local function current_generation()
@@ -72,105 +85,29 @@ local function current_generation()
 end
 
 local function reset_state()
-	if state.debounce_timer then
-		state.debounce_timer:stop()
-		state.debounce_timer:close()
+	if state.tick_timer then
+		state.tick_timer:stop()
+		state.tick_timer:close()
 	end
+
+	local progress, struggle, attention_budget, attention_arbiter = create_runtime()
 
 	state.active = false
 	state.generation = nil
-	state.debounce_timer = nil
-	state.pending_reason = nil
-	state.pending_bufnr = nil
-	state.last_prompt_at = nil
 	state.proactive_calls = 0
 	state.diagnostic_signatures = {}
-	state.progress = create_progress_state()
+	state.progress = progress
+	state.struggle = struggle
+	state.budget = attention_budget
+	state.arbiter = attention_arbiter
+	state.tick_timer = nil
+	state.last_dispatch_bufnr = nil
 	state.running = false
-end
-
-local function diagnostic_signature(diagnostic)
-	local path = vim.api.nvim_buf_get_name(diagnostic.bufnr or 0)
-
-	return table.concat({
-		path,
-		tostring(diagnostic.lnum),
-		tostring(diagnostic.col),
-		tostring(diagnostic.severity),
-		diagnostic.source or "",
-		diagnostic.message or "",
-	}, "\0")
-end
-
-local function collect_diagnostic_signatures()
-	local signatures = {}
-
-	for _, diagnostic in ipairs(vim.diagnostic.get()) do
-		if IMPORTANT_DIAGNOSTICS[diagnostic.severity] then
-			signatures[diagnostic_signature(diagnostic)] = true
-		end
-	end
-
-	return signatures
-end
-
-local function has_new_diagnostics(next_signatures)
-	for signature in pairs(next_signatures) do
-		if not state.diagnostic_signatures[signature] then
-			return true
-		end
-	end
-
-	return false
-end
-
-local function collect_todo_signatures(bufnr)
-	local signatures = {}
-
-	if not vim.api.nvim_buf_is_valid(bufnr) then
-		return signatures
-	end
-
-	if vim.bo[bufnr].buftype ~= "" then
-		return signatures
-	end
-
-	if vim.api.nvim_buf_line_count(bufnr) > MAX_TODO_SCAN_LINES then
-		debug("skipped TODO scan for large buffer")
-		return signatures
-	end
-
-	for _, line in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
-		local trimmed = vim.trim(line)
-
-		for _, marker in ipairs({ "TODO", "FIXME", "HACK" }) do
-			if line:find(marker, 1, true) then
-				signatures[marker .. "\0" .. stable_hash(trimmed)] = true
-			end
-		end
-	end
-
-	return signatures
-end
-
-local function count_new_todo_markers(bufnr, next_signatures)
-	local progress = state.progress or create_progress_state()
-	local previous = (progress.buffers[bufnr] and progress.buffers[bufnr].todo_signatures) or {}
-	local count = 0
-
-	for signature in pairs(next_signatures) do
-		if not previous[signature] then
-			count = count + 1
-		end
-	end
-
-	return count
 end
 
 local function can_call_backend()
 	local current_config = config.get()
 	local trigger_config = current_config.triggers or {}
-	local cooldown_ms = trigger_config.cooldown_ms
 	local max_proactive_calls = trigger_config.max_proactive_calls
 
 	if type(max_proactive_calls) == "number" and state.proactive_calls >= max_proactive_calls then
@@ -178,21 +115,32 @@ local function can_call_backend()
 		return false
 	end
 
-	if type(cooldown_ms) == "number" and state.last_prompt_at then
-		local elapsed_ms = uv.now() - state.last_prompt_at
-
-		if elapsed_ms < cooldown_ms then
-			debug("blocked by cooldown")
-			return false
-		end
-	end
-
 	return true
 end
 
-local function instruction_for(reason)
+local function instruction_for(lane_name)
+	if lane_name == "progress" then
+		return table.concat({
+			"Proactive Buddy check triggered by the Progress lane.",
+			"The user appears to have finished a coherent chunk of work after recent edits.",
+			"Look for one concrete observation about the current diff, diagnostics, or local project notes.",
+			"Return outcome=\"silent_reset\" if there is nothing useful enough to interrupt the user.",
+			"Return outcome=\"silent_hold\" only if the situation looks promising but needs a little more work before speaking.",
+		}, "\n")
+	end
+
+	if lane_name == "struggle" then
+		return table.concat({
+			"Proactive Buddy check triggered by the Struggle lane.",
+			"The user appears to be circling in a small area, undoing recent work, or sitting with stable diagnostics.",
+			"Offer help only if there is one concrete way to unblock the current work.",
+			"Return outcome=\"silent_reset\" if the editor already makes the issue obvious or there is no useful extra context.",
+			"Return outcome=\"silent_hold\" if the user may be converging and another short observation window would be better.",
+		}, "\n")
+	end
+
 	return table.concat({
-		"Proactive Buddy check triggered by " .. reason .. ".",
+		"Proactive Buddy check triggered by the " .. lane_name .. " lane.",
 		"Use the provided context to decide whether there is one concrete, useful thing to tell the user.",
 		"Return outcome=\"silent_reset\" if the observation is generic, speculative, repeated, or not actionable.",
 		"Return outcome=\"silent_hold\" only if a useful observation may be forming but is not ready yet.",
@@ -205,18 +153,45 @@ end
 
 local function finish_backend_check()
 	state.running = false
-
-	if state.pending_reason then
-		debug("replaying pending trigger after backend check")
-		schedule(state.pending_reason, state.pending_bufnr)
-	end
 end
 
-local function run_backend_check(reason, bufnr)
+local function lane_for_name(lane_name)
+	if lane_name == "progress" and state.progress then
+		return state.progress.lane
+	end
+
+	if lane_name == "struggle" and state.struggle then
+		return state.struggle.lane
+	end
+
+	return nil
+end
+
+local function apply_backend_outcome(lane_name, outcome, now)
+	local selected_lane = lane_for_name(lane_name)
+
+	if not selected_lane then
+		return
+	end
+
+	if outcome == "silent_hold" then
+		selected_lane:hold(now)
+		debug(lane_name .. " held after backend outcome")
+		return
+	end
+
+	selected_lane:reset(now)
+
+	if lane_name == "progress" and state.progress then
+		state.progress.save_nudged = false
+	end
+
+	debug(lane_name .. " reset after backend outcome=" .. tostring(outcome))
+end
+
+local function run_backend_check(lane_name, bufnr)
 	if state.running then
-		state.pending_reason = reason
-		state.pending_bufnr = bufnr
-		debug("kept " .. reason .. " pending because a proactive check is already running")
+		debug("ignored " .. lane_name .. " dispatch because a proactive check is already running")
 		return
 	end
 
@@ -226,9 +201,8 @@ local function run_backend_check(reason, bufnr)
 
 	local generation = state.generation
 	state.running = true
-	state.last_prompt_at = uv.now()
 	state.proactive_calls = state.proactive_calls + 1
-	debug("backend check started for " .. reason)
+	debug("backend check started for " .. lane_name)
 
 	context.collect_async(function(collected_context)
 		if not session.current().active or current_generation() ~= generation then
@@ -243,7 +217,9 @@ local function run_backend_check(reason, bufnr)
 			return
 		end
 
-		backend.prompt_async(collected_context, instruction_for(reason), function(response, err)
+		backend.prompt_async(collected_context, instruction_for(lane_name), function(response, err)
+			local finished_at = uv.now()
+
 			if not session.current().active or current_generation() ~= generation then
 				finish_backend_check()
 				debug("backend response ignored because session changed")
@@ -255,16 +231,18 @@ local function run_backend_check(reason, bufnr)
 			if err then
 				debug("backend check failed: " .. err)
 				append_backend_error(err)
+				apply_backend_outcome(lane_name, "silent_hold", finished_at)
 				return
 			end
 
 			debug("backend response outcome=" .. tostring(response.outcome))
+			apply_backend_outcome(lane_name, response.outcome, finished_at)
 
 			if response.outcome == "speak" then
 				local appended = session.append_message("buddy", response.message, {
 					severity = response.severity,
 					reason = response.reason,
-					trigger = reason,
+					trigger = lane_name,
 					bufnr = bufnr,
 					proactive = true,
 				})
@@ -277,94 +255,67 @@ local function run_backend_check(reason, bufnr)
 	end, { source_buf = bufnr })
 end
 
-local function evaluate_pending_trigger()
-	local reason = state.pending_reason
-	local bufnr = state.pending_bufnr
+local function on_diagnostics_changed(bufnr)
+	local next_signatures = struggle_lane.collect_diagnostic_signatures()
+	local now = uv.now()
 
-	state.pending_reason = nil
-	state.pending_bufnr = nil
-
-	if not reason or not session.current().active or current_generation() ~= state.generation then
-		debug("debounced trigger ignored")
-		return
+	if state.struggle then
+		struggle_lane.on_diagnostics_changed(state.struggle, state.diagnostic_signatures, next_signatures, bufnr, now, debug)
 	end
 
-	debug("debounced trigger evaluating " .. reason)
-
-	if state.running then
-		state.pending_reason = reason
-		state.pending_bufnr = bufnr
-		debug("kept " .. reason .. " pending because a proactive check is already running")
-		return
-	end
-
-	run_backend_check(reason, bufnr)
+	state.diagnostic_signatures = next_signatures
 end
 
-function schedule(reason, bufnr)
+local function promote_stable_diagnostics(now)
+	if not state.struggle then
+		return
+	end
+
+	local bufnr = struggle_lane.promote_stable_diagnostics(state.struggle, state.diagnostic_signatures, now, debug)
+
+	if bufnr then
+		state.last_dispatch_bufnr = bufnr or state.last_dispatch_bufnr
+	end
+end
+
+local function run_arbiter_tick()
 	if not session.current().active or current_generation() ~= state.generation then
 		return
 	end
 
-	local current_config = config.get()
-	local trigger_config = current_config.triggers or {}
-	local debounce_ms = trigger_config.debounce_ms or 2000
-
-	state.pending_reason = reason
-	state.pending_bufnr = bufnr
-	debug("scheduled " .. reason .. " with debounce " .. tostring(debounce_ms) .. "ms")
-
-	if not state.debounce_timer then
-		state.debounce_timer = uv.new_timer()
+	if state.running or not state.arbiter then
+		return
 	end
 
-	state.debounce_timer:stop()
-	state.debounce_timer:start(debounce_ms, 0, vim.schedule_wrap(evaluate_pending_trigger))
+	if not can_call_backend() then
+		return
+	end
+
+	local now = uv.now()
+	promote_stable_diagnostics(now)
+
+	local decision = state.arbiter:tick(now)
+
+	if decision.action ~= "dispatch" then
+		if decision.action == "blocked" then
+			debug("arbiter blocked " .. tostring(decision.lane) .. " reason=" .. tostring(decision.reason))
+		end
+
+		return
+	end
+
+	debug("arbiter dispatching " .. decision.lane .. " via " .. tostring(decision.zone) .. " budget gate")
+	run_backend_check(decision.lane, state.last_dispatch_bufnr or vim.api.nvim_get_current_buf())
 end
 
-local function on_diagnostics_changed(bufnr)
-	local next_signatures = collect_diagnostic_signatures()
-	local changed = has_new_diagnostics(next_signatures)
-
-	state.diagnostic_signatures = next_signatures
-
-	if changed then
-		debug("new diagnostic detected")
-		schedule("diagnostic_changed", bufnr or vim.api.nvim_get_current_buf())
-	else
-		debug("diagnostic event without new WARN/ERROR")
-	end
-end
-
-local function progress_for_buffer(bufnr)
-	local progress = state.progress
-
-	if not progress then
-		progress = create_progress_state()
-		state.progress = progress
+local function start_tick_timer()
+	if state.tick_timer then
+		state.tick_timer:stop()
+		state.tick_timer:close()
 	end
 
-	if not progress.buffers[bufnr] then
-		progress.buffers[bufnr] = {
-			line_count = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_line_count(bufnr) or 0,
-			todo_signatures = collect_todo_signatures(bufnr),
-		}
-	end
-
-	return progress, progress.buffers[bufnr]
-end
-
-local function poll_progress(now, signal)
-	local progress = state.progress
-
-	if not progress then
-		return nil
-	end
-
-	local status = progress.lane:poll(now, signal)
-	progress.last_status = status
-	debug("progress status=" .. status .. " mass=" .. string.format("%.2f", progress.lane.mass))
-	return status
+	state.tick_timer = uv.new_timer()
+	state.tick_timer:start(TICK_MS, TICK_MS, vim.schedule_wrap(run_arbiter_tick))
 end
 
 local function on_text_changed()
@@ -374,32 +325,14 @@ local function on_text_changed()
 		return
 	end
 
-	local progress, buffer_state = progress_for_buffer(bufnr)
 	local now = uv.now()
-	local line_count = vim.api.nvim_buf_line_count(bufnr)
-	local next_signatures = collect_todo_signatures(bufnr)
-	local new_todos = count_new_todo_markers(bufnr, next_signatures)
-	local lines_delta = line_count - buffer_state.line_count
-	local signal_mass = PROGRESS_PARAMS.base + math.sqrt(math.abs(lines_delta))
+	local cursor = vim.api.nvim_win_get_cursor(0)
+	local _, lines_delta = progress_lane.on_text_changed(state.progress, bufnr, now, debug)
+	state.last_dispatch_bufnr = bufnr
 
-	if new_todos > 0 then
-		signal_mass = signal_mass + new_todos * TODO_PROGRESS_MASS
+	if state.struggle then
+		struggle_lane.on_text_changed(state.struggle, bufnr, now, cursor[1], lines_delta, debug)
 	end
-
-	local status = progress.lane:poll(now, {
-		mass = signal_mass,
-	})
-
-	buffer_state.line_count = line_count
-	buffer_state.todo_signatures = next_signatures
-	progress.last_status = status
-	progress.save_nudged = false
-
-	if new_todos > 0 then
-		debug("new TODO/FIXME/HACK marker added passive progress mass=" .. tostring(signal_mass))
-	end
-
-	debug("progress text signal lines_delta=" .. tostring(lines_delta) .. " status=" .. status)
 end
 
 local function on_buffer_saved(bufnr)
@@ -409,24 +342,16 @@ local function on_buffer_saved(bufnr)
 		return
 	end
 
-	local changed = false
-
-	if not progress.save_nudged then
-		changed = progress.lane:lower_threshold(SAVE_THRESHOLD_NUDGE)
-		progress.save_nudged = changed
-	end
-
-	local status = poll_progress(uv.now())
-
-	debug("BufWritePost progress_nudge=" .. tostring(changed) .. " status=" .. tostring(status))
+	progress_lane.on_buffer_saved(progress, uv.now(), debug)
+	state.last_dispatch_bufnr = bufnr
 end
 
 local function prime_baselines()
-	state.diagnostic_signatures = collect_diagnostic_signatures()
+	state.diagnostic_signatures = struggle_lane.collect_diagnostic_signatures()
 
 	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
 		if vim.api.nvim_buf_is_loaded(bufnr) then
-			progress_for_buffer(bufnr)
+			progress_lane.for_buffer(state.progress, bufnr, debug)
 		end
 	end
 end
@@ -463,6 +388,7 @@ function M.start()
 	})
 
 	prime_baselines()
+	start_tick_timer()
 end
 
 function M.stop()
@@ -480,22 +406,26 @@ function M.get_state()
 	local snapshot = {
 		active = state.active,
 		generation = state.generation,
-		debounce_timer = state.debounce_timer,
-		pending_reason = state.pending_reason,
-		pending_bufnr = state.pending_bufnr,
-		last_prompt_at = state.last_prompt_at,
 		proactive_calls = state.proactive_calls,
 		diagnostic_signatures = vim.deepcopy(state.diagnostic_signatures),
+		last_dispatch_bufnr = state.last_dispatch_bufnr,
 		running = state.running,
 	}
 
 	if state.progress then
-		snapshot.progress = {
-			lane = state.progress.lane:get_state(),
-			last_status = state.progress.last_status,
-			save_nudged = state.progress.save_nudged,
-			buffers = vim.deepcopy(state.progress.buffers),
-		}
+		snapshot.progress = progress_lane.snapshot(state.progress)
+	end
+
+	if state.struggle then
+		snapshot.struggle = struggle_lane.snapshot(state.struggle)
+	end
+
+	if state.budget then
+		snapshot.budget = state.budget:get_state()
+	end
+
+	if state.arbiter then
+		snapshot.arbiter = state.arbiter:get_state()
 	end
 
 	return snapshot

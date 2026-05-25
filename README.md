@@ -6,6 +6,10 @@ rolling chat. It is meant to catch missed edge cases, new diagnostics, duplicate
 local notes such as `.local/` without taking over the task. Buddy only starts observing after an
 explicit `:BuddyStart` command and is designed as a read-only companion, not a code-writing agent.
 
+> [!WARNING]
+> Buddy currently depends on OpenCode as its reasoning backend. `:BuddyStart` expects an OpenCode
+> daemon to be reachable or starts one automatically when `opencode.auto_start = true`.
+
 ## Local Setup
 
 With a plugin manager, load this repository as a local plugin and call:

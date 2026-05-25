@@ -124,6 +124,10 @@ local function configure_window(win)
 	vim.api.nvim_set_option_value("breakindent", true, { win = win })
 end
 
+local function can_open_chat_float(width, total_height)
+	return vim.o.columns >= width + 4 and vim.o.lines >= total_height + 4
+end
+
 local function input_title()
 	if not state.pending then
 		return " Ask Buddy "
@@ -332,7 +336,12 @@ function M.open()
 	local row = math.floor((vim.o.lines - total_height) / 2)
 	local col = math.floor((vim.o.columns - width) / 2)
 
-	state.chat_win = vim.api.nvim_open_win(chat_buf, false, {
+	if not can_open_chat_float(width, total_height) then
+		vim.notify("Buddy chat needs a larger editor window", vim.log.levels.WARN)
+		return
+	end
+
+	local chat_ok, chat_win = pcall(vim.api.nvim_open_win, chat_buf, false, {
 		relative = "editor",
 		width = width,
 		height = chat_height,
@@ -344,7 +353,14 @@ function M.open()
 		title_pos = "center",
 	})
 
-	state.input_win = vim.api.nvim_open_win(input_buf, true, {
+	if not chat_ok then
+		vim.notify("Buddy chat could not open", vim.log.levels.WARN)
+		return
+	end
+
+	state.chat_win = chat_win
+
+	local input_ok, input_win = pcall(vim.api.nvim_open_win, input_buf, true, {
 		relative = "editor",
 		width = width,
 		height = input_height,
@@ -355,6 +371,14 @@ function M.open()
 		title = input_title(),
 		title_pos = "left",
 	})
+
+	if not input_ok then
+		close_chat_windows()
+		vim.notify("Buddy input could not open", vim.log.levels.WARN)
+		return
+	end
+
+	state.input_win = input_win
 
 	configure_window(state.chat_win)
 	vim.api.nvim_set_option_value("wrap", false, { win = state.input_win })

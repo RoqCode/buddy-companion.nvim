@@ -4,15 +4,52 @@ local http = require("buddy.backend.http")
 local response_parser = require("buddy.backend.response")
 
 local M = {}
+local uv = vim.uv or vim.loop
 
 local daemon = {
 	job = nil,
+}
+
+local session_create = {
+	generation = nil,
+	callbacks = nil,
 }
 
 local function parse_base_url(base_url)
 	local host, port = tostring(base_url):match("^https?://([^:/]+):(%d+)")
 
 	return host or "127.0.0.1", port or "4096"
+end
+
+local function normalize_health_response(response)
+	if response == nil then
+		return { version = "unknown" }, nil
+	end
+
+	if type(response) ~= "table" then
+		return nil, "OpenCode health returned an invalid response body"
+	end
+
+	if type(response.version) ~= "string" then
+		response.version = "unknown"
+	end
+
+	return response, nil
+end
+
+local function finish_session_create(expected_generation, session_id, err)
+	if expected_generation and session_create.generation ~= expected_generation then
+		return
+	end
+
+	local callbacks = session_create.callbacks or {}
+
+	session_create.generation = nil
+	session_create.callbacks = nil
+
+	for _, callback in ipairs(callbacks) do
+		callback(session_id, err)
+	end
 end
 
 local function poll_health_until_ready(deadline, callback)
@@ -23,7 +60,7 @@ local function poll_health_until_ready(deadline, callback)
 			return
 		end
 
-		if vim.loop.now() >= deadline then
+		if uv.now() >= deadline then
 			session.set_backend_available(false)
 			callback(nil, err)
 			return
@@ -164,11 +201,24 @@ function M.parse_buddy_response(response)
 end
 
 function M.health()
-	return http.request("GET", "/global/health")
+	local response, err = http.request("GET", "/global/health")
+
+	if err then
+		return nil, err
+	end
+
+	return normalize_health_response(response)
 end
 
 function M.health_async(callback)
-	http.request_async("GET", "/global/health", nil, nil, callback)
+	http.request_async("GET", "/global/health", nil, nil, function(response, err)
+		if err then
+			callback(nil, err)
+			return
+		end
+
+		callback(normalize_health_response(response))
+	end)
 end
 
 function M.ensure_daemon_async(callback)
@@ -200,7 +250,7 @@ function M.ensure_daemon_async(callback)
 		end
 
 		local startup_timeout_ms = current_config.opencode.startup_timeout_ms or 5000
-		local deadline = vim.loop.now() + startup_timeout_ms
+		local deadline = uv.now() + startup_timeout_ms
 
 		poll_health_until_ready(deadline, function(ready_response, ready_err)
 			callback(ready_response, ready_err, true)
@@ -228,6 +278,18 @@ function M.ensure_opencode_session_async(callback)
 
 	local generation = current_session.generation
 
+	if session_create.callbacks and session_create.generation == generation then
+		table.insert(session_create.callbacks, callback)
+		return
+	end
+
+	if session_create.callbacks then
+		finish_session_create(session_create.generation, nil, "Buddy session changed before OpenCode session was created")
+	end
+
+	session_create.generation = generation
+	session_create.callbacks = { callback }
+
 	local current_config = config.get()
 	local body = {
 		title = "Buddy Companion",
@@ -238,25 +300,25 @@ function M.ensure_opencode_session_async(callback)
 		directory = current_session.workspace_root,
 	}, function(created_session, err)
 		if not session.current().active or session.current().generation ~= generation then
-			callback(nil, "Buddy session changed before OpenCode session was created")
+			finish_session_create(generation, nil, "Buddy session changed before OpenCode session was created")
 			return
 		end
 
 		if err then
 			session.set_backend_available(false)
-			callback(nil, err)
+			finish_session_create(generation, nil, err)
 			return
 		end
 
 		if type(created_session) ~= "table" or type(created_session.id) ~= "string" then
 			session.set_backend_available(false)
-			callback(nil, "OpenCode session create returned an invalid session body")
+			finish_session_create(generation, nil, "OpenCode session create returned an invalid session body")
 			return
 		end
 
 		session.set_backend_available(true)
 		session.set_opencode_session_id(created_session.id)
-		callback(created_session.id, nil)
+		finish_session_create(generation, created_session.id, nil)
 	end)
 end
 
@@ -270,6 +332,7 @@ function M.prompt_async(collected_context, instruction, callback)
 		end
 
 		local current_config = config.get()
+		local request_generation = current_session.generation
 		local body = {
 			agent = current_config.opencode.agent,
 			format = buddy_output_format(),
@@ -285,6 +348,11 @@ function M.prompt_async(collected_context, instruction, callback)
 		http.request_async("POST", "/session/" .. opencode_session_id .. "/message", body, {
 			directory = current_session.workspace_root,
 		}, function(prompt_response, prompt_err)
+			if not session.current().active or session.current().generation ~= request_generation then
+				callback(nil, "Buddy session changed before OpenCode response arrived")
+				return
+			end
+
 			if prompt_err then
 				session.set_backend_available(false)
 				callback(nil, prompt_err)
@@ -307,6 +375,7 @@ function M.answer_async(collected_context, question, callback)
 		end
 
 		local current_config = config.get()
+		local request_generation = current_session.generation
 		local body = {
 			agent = current_config.opencode.agent,
 			format = answer_output_format(),
@@ -325,6 +394,11 @@ function M.answer_async(collected_context, question, callback)
 		http.request_async("POST", "/session/" .. opencode_session_id .. "/message", body, {
 			directory = current_session.workspace_root,
 		}, function(prompt_response, prompt_err)
+			if not session.current().active or session.current().generation ~= request_generation then
+				callback(nil, "Buddy session changed before OpenCode response arrived")
+				return
+			end
+
 			if prompt_err then
 				session.set_backend_available(false)
 				callback(nil, prompt_err)

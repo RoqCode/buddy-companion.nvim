@@ -8,6 +8,8 @@ local arbiter = require("buddy.triggers.arbiter")
 local progress_lane = require("buddy.triggers.progress")
 local struggle_lane = require("buddy.triggers.struggle")
 local self_check_lane = require("buddy.triggers.self_check")
+local profiles = require("buddy.triggers.profile")
+local instructions = require("buddy.triggers.instructions")
 
 local M = {}
 
@@ -33,59 +35,9 @@ local state = {
 local TICK_MS = 1500
 local SILENCE_MS = 1500
 
-local TRIGGER_PROFILES = {
-	chatty = {
-		personality = "chatty",
-		budget = { max = 12, regen_factor = 0.45, regen_unit = 45 * 1000 },
-		progress = { threshold_base = 5.5, quiet_window = 4500 },
-		struggle = { threshold_base = 3, quiet_window = 900 },
-		self_check = { check_after_ms = 6 * 60 * 1000, activity_idle_ms = 75 * 1000 },
-		gates = {
-			progress = { cost = 3, normal_threshold = 4 },
-			struggle = { cost = 1.5, normal_threshold = 3, breakthrough_threshold = 1 },
-			self_check = { cost = 4, normal_threshold = 5 },
-		},
-	},
-	normal = {
-		personality = "normal",
-		budget = { max = 10, regen_factor = 0.5, regen_unit = 60 * 1000 },
-		progress = { threshold_base = 7, quiet_window = 6000 },
-		struggle = { threshold_base = 3.5, quiet_window = 1200 },
-		self_check = { check_after_ms = 10 * 60 * 1000, activity_idle_ms = 60 * 1000 },
-		gates = {
-			progress = { cost = 4, normal_threshold = 5 },
-			struggle = { cost = 2, normal_threshold = 4, breakthrough_threshold = 1.5 },
-			self_check = { cost = 5, normal_threshold = 6 },
-		},
-	},
-	almost_silent = {
-		personality = "almost_silent",
-		budget = { max = 8, regen_factor = 0.55, regen_unit = 90 * 1000 },
-		progress = { threshold_base = 9, quiet_window = 9000 },
-		struggle = { threshold_base = 4.5, quiet_window = 1800 },
-		self_check = { check_after_ms = 18 * 60 * 1000, activity_idle_ms = 45 * 1000 },
-		gates = {
-			progress = { cost = 5, normal_threshold = 6.5 },
-			struggle = { cost = 2.5, normal_threshold = 5, breakthrough_threshold = 2 },
-			self_check = { cost = 6, normal_threshold = 7 },
-		},
-	},
-}
-
 local function resolve_trigger_profile()
 	local trigger_config = config.get().triggers or {}
-	local personality = trigger_config.personality or "normal"
-	local profile = TRIGGER_PROFILES[personality]
-
-	if not profile then
-		vim.notify(
-			"Buddy trigger: unknown personality " .. tostring(personality) .. ", falling back to normal",
-			vim.log.levels.WARN
-		)
-		profile = TRIGGER_PROFILES.normal
-	end
-
-	return vim.deepcopy(profile)
+	return profiles.resolve(trigger_config)
 end
 
 local function debug(message)
@@ -169,46 +121,6 @@ local function can_call_backend()
 	return true
 end
 
-local function instruction_for(lane_name)
-	if lane_name == "progress" then
-		return table.concat({
-			"Proactive Buddy check triggered by the Progress lane.",
-			"The user appears to have finished a coherent chunk of work after recent edits.",
-			"Look for one concrete observation about the current diff, diagnostics, or local project notes.",
-			"Return outcome=\"silent_reset\" if there is nothing useful enough to interrupt the user.",
-			"Return outcome=\"silent_hold\" only if the situation looks promising but needs a little more work before speaking.",
-		}, "\n")
-	end
-
-	if lane_name == "struggle" then
-		return table.concat({
-			"Proactive Buddy check triggered by the Struggle lane.",
-			"The user appears to be circling in a small area, undoing recent work, or sitting with stable diagnostics.",
-			"Offer help only if there is one concrete way to unblock the current work.",
-			"Return outcome=\"silent_reset\" if the editor already makes the issue obvious or there is no useful extra context.",
-			"Return outcome=\"silent_hold\" if the user may be converging and another short observation window would be better.",
-		}, "\n")
-	end
-
-	if lane_name == "self_check" then
-		return table.concat({
-			"Proactive Buddy check triggered by the Self-Check lane.",
-			"The user has been doing continuous low-level work without another lane producing a useful intervention.",
-			"Inspect the current context freely: recent diff, diagnostics, local notes, and active buffer.",
-			"Speak only if there is one concrete observation, risk, useful question, or well-earned reassurance.",
-			"Return outcome=\"silent_reset\" if there is nothing useful enough to interrupt the user.",
-			"Return outcome=\"silent_hold\" if the situation looks promising but needs a little more work before speaking.",
-		}, "\n")
-	end
-
-	return table.concat({
-		"Proactive Buddy check triggered by the " .. lane_name .. " lane.",
-		"Use the provided context to decide whether there is one concrete, useful thing to tell the user.",
-		"Return outcome=\"silent_reset\" if the observation is generic, speculative, repeated, or not actionable.",
-		"Return outcome=\"silent_hold\" only if a useful observation may be forming but is not ready yet.",
-	}, "\n")
-end
-
 local function append_backend_error(err)
 	session.report_backend_error("OpenCode backend error: " .. err)
 end
@@ -290,7 +202,7 @@ local function run_backend_check(lane_name, bufnr)
 			return
 		end
 
-		backend.prompt_async(collected_context, instruction_for(lane_name), function(response, err)
+		backend.prompt_async(collected_context, instructions.for_lane(lane_name), function(response, err)
 			local finished_at = uv.now()
 
 			if not session.current().active or current_generation() ~= generation then

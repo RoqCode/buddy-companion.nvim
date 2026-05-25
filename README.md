@@ -26,7 +26,7 @@ require("buddy").setup({
     debug = false,
   },
   notifications = {
-    floating_duration_ms = 5000,
+    floating_duration_ms = 15000,
     floating_content = "full",
     floating_preview_chars = 50,
   },

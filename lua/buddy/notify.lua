@@ -54,6 +54,10 @@ local function display_height(lines, width)
 	return height
 end
 
+local function can_open_float(width, height)
+	return vim.o.columns >= width + 4 and vim.o.lines >= height + 4
+end
+
 function M.show(message, severity)
 	local notification_config = config.get().notifications or {}
 	local duration_ms = notification_config.floating_duration_ms
@@ -72,6 +76,12 @@ function M.show(message, severity)
 	local lines = vim.split(text, "\n", { plain = true })
 	local width = math.min(80, math.max(24, vim.o.columns - 8))
 	local height = math.min(display_height(lines, width), math.max(1, vim.o.lines - 6))
+
+	if not can_open_float(width, height) then
+		vim.notify(text, severity == "warning" and vim.log.levels.WARN or vim.log.levels.INFO)
+		return
+	end
+
 	local row = math.max(1, vim.o.lines - height - 4)
 	local col = math.max(0, vim.o.columns - width - 4)
 
@@ -81,7 +91,7 @@ function M.show(message, severity)
 	vim.api.nvim_set_option_value("swapfile", false, { buf = state.buf })
 	vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
 
-	state.win = vim.api.nvim_open_win(state.buf, false, {
+	local ok, win = pcall(vim.api.nvim_open_win, state.buf, false, {
 		relative = "editor",
 		width = width,
 		height = height,
@@ -93,6 +103,14 @@ function M.show(message, severity)
 		title = " Buddy ",
 		title_pos = "left",
 	})
+
+	if not ok then
+		close_existing()
+		vim.notify(text, severity == "warning" and vim.log.levels.WARN or vim.log.levels.INFO)
+		return
+	end
+
+	state.win = win
 
 	vim.api.nvim_set_option_value("wrap", true, { win = state.win })
 	vim.api.nvim_set_option_value("linebreak", true, { win = state.win })

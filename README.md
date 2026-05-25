@@ -33,6 +33,21 @@ require("buddy").setup({
 })
 ```
 
+## Configuration
+
+- `additional_context` (`string | false`, default: `".local"`): workspace-relative folder with extra read-only notes. Set to `false` or `""` to disable it.
+- `opencode.base_url` (`string`, default: `"http://127.0.0.1:4096"`): OpenCode daemon base URL.
+- `opencode.agent` (`string`, default: `"buddy"`): OpenCode agent name used for Buddy requests.
+- `opencode.timeout_ms` (`number`, default: `30000`): HTTP request timeout for OpenCode calls.
+- `opencode.auto_start` (`boolean`, default: `true`): start `opencode serve` automatically when `:BuddyStart` cannot reach a daemon.
+- `opencode.startup_timeout_ms` (`number`, default: `5000`): how long Buddy waits for an auto-started daemon to become healthy.
+- `triggers.personality` (`"chatty" | "normal" | "almost_silent"`, default: `"normal"`): coarse proactive behavior tuning.
+- `triggers.max_proactive_calls` (`number | false`, default: `false`): optional per-session cap for proactive backend calls; user questions are not counted.
+- `triggers.debug` (`boolean`, default: `false`): show trigger decisions through `vim.notify`.
+- `notifications.floating_duration_ms` (`number`, default: `15000`): how long proactive floating notifications stay visible; `0` disables the floating window.
+- `notifications.floating_content` (`"full" | "preview" | "hidden"`, default: `"full"`): controls floating notification text. Aliases: `"partial"` = `"preview"`, `"none"` = `"hidden"`.
+- `notifications.floating_preview_chars` (`number`, default: `50`): max characters used when `floating_content = "preview"`.
+
 ## Commands
 
 - `:BuddyStart` starts a new in-memory Buddy session.

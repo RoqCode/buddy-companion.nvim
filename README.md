@@ -1,7 +1,10 @@
 # buddy-companion.nvim
 
-Buddy is a Neovim companion plugin prototype. It only starts observing after an explicit
-`:BuddyStart` command.
+Buddy is a Neovim companion plugin prototype: a lightweight pair-programming buddy that observes
+your current editor context, notices useful moments to speak up, and answers direct questions in a
+rolling chat. It is meant to catch missed edge cases, new diagnostics, duplicated work, or drift from
+local notes such as `.local/` without taking over the task. Buddy only starts observing after an
+explicit `:BuddyStart` command and is designed as a read-only companion, not a code-writing agent.
 
 ## Local Setup
 
